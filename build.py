@@ -1,4 +1,4 @@
-﻿"""Build the Jaguar cartridge:  python build.py [--norecomp]
+"""Build the Jaguar cartridge:  python build.py [--norecomp]
 
     recomp68.py -> gen/*.s ; rmac main.s ; rln (text at $4000, data at $A00000) ;
     rmac/rln boot.s ; ROM = Univ.bin header + boot stub ($802000) + program image ($802100)
@@ -39,7 +39,7 @@ def main():
         subprocess.run([py, os.path.join(HERE, 'recomp68.py')], cwd=HERE, check=True)
         subprocess.run([py, os.path.join(HERE, 'statchain68.py')], cwd=HERE, check=True)
     shutil.copyfile(GBROM, os.path.join(BUILD, 'gbrom.bin'))
-    run([RMAC, '-fb', '-i' + INC] + (['-dPROFILE=1'] if '--profile' in sys.argv else []) + (['-dHUD=1'] if '--hud' in sys.argv else []) + ['-o', 'build/main.o', 'main.s'], 'rmac_main.log')
+    run([RMAC, '-fb', '-i' + INC] + (['-dPROFILE=1'] if '--profile' in sys.argv else []) + (['-dHUD=1'] if '--hud' in sys.argv else []) + (['-dALLDRAW=1'] if '--alldraw' in sys.argv else []) + (['-dALLDRAW=2'] if '--nodraw' in sys.argv else []) + (['-dNOGPULINE=1'] if '--nogpuline' in sys.argv else []) +['-o', 'build/main.o', 'main.s'], 'rmac_main.log')
     mp = run([RLN, '-z', '-n', '-m', '-a', '%x' % TEXT_ADDR, '%x' % DATA_ADDR, 'x', '-o', 'build/main.bin',
               'build/main.o'], 'rln_main.log')
     run([RMAC, '-fb', '-o', 'build/boot.o', 'boot.s'], 'rmac_boot.log')

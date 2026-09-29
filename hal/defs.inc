@@ -22,6 +22,7 @@ LOG_MARGIN      equ     1024
 PROFBUF         equ     $180000         ; profiler histogram (word per 4 code bytes)
 PROF_SPAN       equ     $40000
 HUDBUF          equ     $0f8000         ; debug HUD bitmap 64x12 RGB16
+ISRSTACK        equ     $3e00           ; VBlank ISR stack (top; a7 is the GB stack otherwise)
                 .if     ^^defined HUD
                 .else
 HUD             equ     0
@@ -29,6 +30,14 @@ HUD             equ     0
                 .if     ^^defined PROFILE
                 .else
 PROFILE         equ     0
+                .endif
+                .if     ^^defined NOGPULINE     ; measurement: the GPU renders no line
+                .else
+NOGPULINE       equ     0
+                .endif
+                .if     ^^defined ALLDRAW       ; measurement: draw every frame, no pacing
+                .else
+ALLDRAW         equ     0
                 .endif
 
 FB_W            equ     160
@@ -134,7 +143,12 @@ hud_cnt:        ds.w    1               ; stream road object tiles this frame
                 .even
 bank_base:      ds.l    64              ; ROMX base register value per bank
 ft_rout:        ds.l    1               ; fast_to: native HBlank handler (0: none)
+isr_sp:         ds.l    1               ; GB stack pointer saved by the VBlank ISR
+rl_tbl:         ds.l    1               ; road (drawn frame): 68k address of the palette pointer
+                                        ;   table (FF99:FF98) in WRAM0, 0: generic path
+rl_pbase:       ds.l    1               ; road: ROM base of bank (FF9A) (bank_base entry)
 if_pend:        ds.b    1               ; pending interrupts (GB IF: 1 VBlank, 2 STAT)
+rl_rend:        ds.b    1               ; road: next line already rendered by LC_ROADLN
                 .even
                 .even
                 .text

@@ -2,8 +2,13 @@
 build/
 gen/
 __pycache__/
-# MAME test runs (test/run.ps1)
+# MAME test runs (test/run.ps1) and debugging comparisons (screenshots, memory dumps:
+# they contain game data)
 test/out*/
+test/cmp/
+test/gbout/
+# audio captures (game music)
+*.wav
 nvram/
 # never commit ROM images
 *.gbc

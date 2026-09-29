@@ -296,13 +296,18 @@ hud_font:       dc.b    7,5,5,5,7, 2,6,2,2,7, 7,1,7,4,7, 7,1,3,1,7, 5,5,7,1,1
                 .even
                 .endif
 
+; a7 is the GB stack: only the exception frame goes there (the GB game keeps data
+; right below its stack, e.g. the race's OAM buffer below $C100); the ISR has its own
 vbl_isr:
+                move.l  a7,isr_sp.w
+                lea     ISRSTACK,a7
                 movem.l d0-d2/a0,-(a7)
                 .if     PROFILE
                 move.w  INT1,d0
                 btst    #3,d0
                 beq.s   .nopit
-                move.l  18(a7),d1               ; interrupted PC
+                movea.l isr_sp.w,a0
+                move.l  2(a0),d1                ; interrupted PC
                 sub.l   #$4000,d1
                 bcs.s   .pa
                 cmp.l   #PROF_SPAN,d1
@@ -316,6 +321,7 @@ vbl_isr:
                 btst    #0,d0
                 bne.s   .nopit
                 movem.l (a7)+,d0-d2/a0
+                movea.l isr_sp.w,a7
                 rte
 .nopit:
                 .endif
@@ -335,6 +341,7 @@ vbl_isr:
                 .endif
                 move.w  #0,INT2
                 movem.l (a7)+,d0-d2/a0
+                movea.l isr_sp.w,a7
                 rte
 
 ; joypad 1 -> joy_dir / joy_btn (GB bits, active high)
@@ -489,19 +496,16 @@ panic:
 ; ===========================================================================
 ; MBC5 ROM bank (d7.b)
 mbc_bank::
-                andi.l  #$3f,d7
+                andi.w  #$3f,d7
                 cmp.b   cur_bank.w,d7
                 beq.s   .same
                 move.b  d7,cur_bank.w
-                move.w  d7,d6
-                add.w   d6,d6
-                add.w   d6,d6
+                add.w   d7,d7
+                add.w   d7,d7
                 lea     bank_dtab,a0
-                move.l  (a0,d6.w),cur_dtab.w
-                moveq   #14,d6
-                lsl.l   d6,d7
-                lea     gbrom-$4000,a4
-                adda.l  d7,a4
+                move.l  (a0,d7.w),cur_dtab.w
+                lea     bank_base.w,a0
+                movea.l (a0,d7.w),a4
 .same:          rts
 
 io_w_svbk::
@@ -595,22 +599,36 @@ wr_ff:          cmp.w   #$fe00,d6
                 bcc.s   wr_f
                 bra     io_wr
 
-; VRAM byte write: 68k copy + log
+; VRAM byte write: 68k copy + log (maps: the byte; tile data: its aligned long as a
+; block, which the GPU converts to its chunky rows)
 vram_wr::
                 move.b  d7,(a2,d6.w)
+                cmp.w   #$9800,d6
+                bcc.s   .map
+                move.b  #LC_BLOCK,(a6)+
                 move.b  vbk_cur.w,(a6)+
+                andi.w  #$fffc,d6
+                move.w  d6,(a6)+
+                moveq   #4,d7
+                move.l  d7,(a6)+
+                move.l  (a2,d6.w),(a6)+
+                bra.s   .ck
+.map:           move.b  vbk_cur.w,(a6)+
                 move.b  d7,(a6)+
                 move.w  d6,(a6)+
-                cmpa.l  log_limit.w,a6
+.ck:            cmpa.l  log_limit.w,a6
                 bcc     log_slow
                 rts
 
+; OAM byte write: the whole entry is sent
 oam_wr::
                 move.b  d7,(a5,d6.w)
+                andi.w  #$fffc,d6
                 move.b  #LC_OAM,(a6)+
-                move.b  d7,(a6)+
+                clr.b   (a6)+
                 move.w  d6,(a6)
                 subi.w  #$fe00,(a6)+
+                move.l  (a5,d6.w),(a6)+
                 cmpa.l  log_limit.w,a6
                 bcc     log_slow
                 rts
@@ -818,15 +836,20 @@ io_w_bcps::
 io_w_ocps::
                 move.b  d7,(a5,d6.w)
                 rts
+; palette data byte: raw copy, then the whole colour to the GPU
 io_w_bcpd::
                 st      grad_last.w
-                move.b  R_BCPS(a5),d6
-                andi.w  #$3f,d6
+                moveq   #$3f,d6
+                and.b   R_BCPS(a5),d6
                 lea     bgpal_raw.w,a0
                 move.b  d7,(a0,d6.w)
-                move.b  #LC_BGPAL,(a6)+
-                move.b  d7,(a6)+
-                move.w  d6,(a6)+
+                move.b  #LC_BGCOL,(a6)+
+                move.w  d6,d7
+                lsr.w   #1,d7
+                move.b  d7,(a6)+                ; colour index
+                add.w   d7,d7
+                move.b  1(a0,d7.w),(a6)+        ; GB colour (high, low)
+                move.b  (a0,d7.w),(a6)+
                 tst.b   R_BCPS(a5)
                 bpl.s   .n
                 addq.b  #1,d6
@@ -837,13 +860,17 @@ io_w_bcpd::
                 bcc     log_slow
                 rts
 io_w_ocpd::
-                move.b  R_OCPS(a5),d6
-                andi.w  #$3f,d6
+                moveq   #$3f,d6
+                and.b   R_OCPS(a5),d6
                 lea     obpal_raw.w,a0
                 move.b  d7,(a0,d6.w)
-                move.b  #LC_OBPAL,(a6)+
+                move.b  #LC_OBCOL,(a6)+
+                move.w  d6,d7
+                lsr.w   #1,d7
                 move.b  d7,(a6)+
-                move.w  d6,(a6)+
+                add.w   d7,d7
+                move.b  1(a0,d7.w),(a6)+
+                move.b  (a0,d7.w),(a6)+
                 tst.b   R_OCPS(a5)
                 bpl.s   .n
                 addq.b  #1,d6
@@ -1097,6 +1124,29 @@ io_r_stat::
 hal_halt::
                 bra     vadvance_line
 
+; 0:3E58 (menus: before VRAM / palette writes): wait STAT mode != 0, then mode 0.
+; Same STAT reads as the GB loops; returns A = 0, Z set, no carry.
+; With the io_r_stat phase model the net effect is known: in VBlank, lines up to line 0
+; then one line; in a visible line, one line (two if already in HBlank: phase 0).
+hal_wait_hbl::
+                btst    #7,R_LCDC(a5)
+                beq.s   .off
+.vb:            cmpi.b  #144,v_ly.w
+                bcs.s   .vis
+                bsr     vadvance_line
+                bra.s   .vb
+.vis:           tst.b   v_phase.w
+                bne.s   .one
+                bsr.s   .adv                    ; (in HBlank: that line ends first)
+.one:           bsr.s   .adv
+.off:           moveq   #0,d7
+                move.b  d7,d0                   ; (Z, no carry)
+                rts
+.adv:           bsr     fast_line
+                beq.s   .ax
+                bsr     vadvance_line
+.ax:            rts
+
 ; wait for LY == $91 (0:3e9f): the GB loop reads LY until it sees $91
 hal_wait_ly91::
                 btst    #7,R_LCDC(a5)
@@ -1280,12 +1330,26 @@ frame_end::
                 bcs.s   .k
                 bsr     log_slow
 .k:             addq.l  #1,frames.w
+                .if     ALLDRAW=1
+                st      rnd.w
+                st      strm.w
+                clr.b   skipn.w
+                rts
+                .endif
+                .if     ALLDRAW=2                ; (measurement: never draw)
+                sf      rnd.w
+                sf      strm.w
+                rts
+                .endif
                 ; pacing: one GB frame per VBlank (fe_vbl = VBlank count at which this
-                ; frame should end). Early: wait. Late: skip drawing (up to 3 in a row).
+                ; frame should end). Early: wait. Late: a drawn frame is followed by an
+                ; undrawn one (which streams the object tiles, so that the next can be
+                ; drawn): drawn / undrawn alternate when drawing costs more than a VBlank.
                 move.l  d0,-(a7)
                 addq.l  #1,fe_vbl.w
                 move.l  vbl_count.w,d0
                 sub.l   fe_vbl.w,d0             ; VBlanks late (< 0: early)
+                sgt     d6
                 bgt.s   .late
                 bsr.s   .want
 .wt:            move.l  vbl_count.w,d0          ; early or on time: wait
@@ -1296,32 +1360,38 @@ frame_end::
 .late:          cmp.l   #8,d0
                 bcs.s   .l1
                 move.l  vbl_count.w,fe_vbl.w    ; far behind: accept the slowdown
-.l1:            cmpi.b  #3,skipn.w
+                moveq   #0,d0
+.l1:            tst.b   rnd.w
+                bne.s   .skip                   ; late drawn frame: the next one catches up
+                cmp.l   #3,d0
+                ble.s   .draw                   ; undrawn, at most 3 VBlanks late: draw;
+                cmpi.b  #3,skipn.w              ; else skip to catch up (up to 3 in a row)
                 bcc.s   .draw
-                sf      rnd.w
+.skip:          sf      rnd.w
                 addq.b  #1,skipn.w
                 bra.s   .fw
 .draw:          bsr.s   .want
-.fw:            move.b  rnd.w,strm.w            ; stream object tiles in the next frame only
-                cmpi.b  #2,skipn.w              ; if the frame after it may be drawn
-                bcs.s   .fx
-                st      strm.w
+.fw:            st      strm.w                  ; stream object tiles for the frame after,
+                tst.b   rnd.w                   ; except in a drawn frame that is late
+                beq.s   .fx                     ; (the one after it will be skipped)
+                tst.b   d6
+                beq.s   .fx
+                sf      strm.w
 .fx:            move.l  (a7)+,d0
                 rts
 ; draw the next frame, if its object tiles were streamed in this one and the GPU has
 ; finished the frames already sent (else the 68k would stall on a full log)
 .want:          tst.b   strm.w
                 beq.s   .nos
-                move.w  fsent+2.w,d0
-                sub.w   G_FRAMES+2,d0           ; frames sent, not finished
-                cmp.w   #2,d0
+                move.w  fsent+2.w,d7
+                sub.w   G_FRAMES+2,d7           ; frames sent, not finished
+                cmp.w   #2,d7
                 bcc.s   .nos
                 st      rnd.w
-                st      strm.w
                 clr.b   skipn.w
                 rts
 .nos:           sf      rnd.w
-                move.b  #2,skipn.w
+                addq.b  #1,skipn.w
                 rts
 ; wait for the next VBlank (LCD off)
 frame_wait::

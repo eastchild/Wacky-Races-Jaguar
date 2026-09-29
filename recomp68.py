@@ -36,6 +36,10 @@ PAIR = {'b': 'd1', 'c': 'd1', 'd': 'd2', 'e': 'd2', 'h': 'd3', 'l': 'd3'}
 R8 = ['b', 'c', 'd', 'e', 'h', 'l', '(hl)', 'a']
 RPN = ['bc', 'de', 'hl', 'sp']
 RPR = {'bc': 'd1', 'de': 'd2', 'hl': 'd3'}
+# opcodes that never write A (constant tracking of A)
+A_SAFE = {0x00, 0xF3, 0xFB, 0x37, 0x3F, 0x02, 0x12, 0x22, 0x32, 0xE0, 0xE2, 0xEA,
+          0xC5, 0xD5, 0xE5, 0xF5, 0xC1, 0xD1, 0xE1, 0x01, 0x11, 0x21, 0x31, 0x03, 0x13, 0x23, 0x33,
+          0x0B, 0x1B, 0x2B, 0x3B, 0x09, 0x19, 0x29, 0x39, 0x08, 0xF9}
 
 
 def s16(v):
@@ -353,6 +357,13 @@ class Recomp:
             else: K[rp[0]] = (v >> 8) & 255; K[rp[1]] = v & 255
         if kind == 'call' or kind in ('jp', 'jr', 'ret', 'jphl'):
             K.clear(); return
+        # A is only kept known across instructions known not to write it
+        o2 = ROM[off + 1] if l > 1 else 0
+        if not (op in A_SAFE or (0x40 <= op < 0x80 and (op >> 3) & 7 != 7)
+                or ((op & 0xC7) == 0x06 and op != 0x3E)
+                or ((op & 0xC7) in (0x04, 0x05) and (op >> 3) & 7 != 7)
+                or (op == 0xCB and ((o2 & 7) != 7 or o2 >> 6 == 1))):
+            K['a'] = None
         if op in (0x01, 0x11, 0x21): setp(['bc', 'de', 'hl'][op >> 4], n16); return
         if op in (0x03, 0x13, 0x23, 0x0B, 0x1B, 0x2B):
             rp = ['bc', 'de', 'hl'][op >> 4 & 3]
@@ -366,7 +377,7 @@ class Recomp:
             setp('hl', None if a is None or b is None else (a + b) & 0xFFFF); return
         if op in (0xC1, 0xD1, 0xE1): setp(['bc', 'de', 'hl'][op >> 4 & 3], None); return
         if op == 0xF8: setp('hl', None); return
-        R = ['b', 'c', 'd', 'e', 'h', 'l', None, None]
+        R = ['b', 'c', 'd', 'e', 'h', 'l', None, 'a']
         if 0x40 <= op < 0x80 and op != 0x76:
             d, s = R[(op >> 3) & 7], (op & 7)
             if d: K[d] = K.get(R[s]) if R[s] else None
@@ -539,7 +550,15 @@ class Recomp:
         if k == 'WX': return [f'move.b d0,{s16(a)}(a3)']
         if k == 'I': return ['move.b d0,d7'] + self.io_write(a)
         if k == 'M':
-            if 0x2000 <= a < 0x3000: return ['move.b d0,d7', 'jsr mbc_bank']
+            if 0x2000 <= a < 0x3000:
+                n = self.K.get('a')
+                if n is None:
+                    return ['move.b d0,d7', 'jsr mbc_bank']
+                # constant bank (ld a,n / ld ($2000),a): inline switch
+                n &= 0x3F
+                lab = self.uniq()
+                return [f'cmpi.b #${n:02x},cur_bank.w', f'beq.s {lab}', f'move.b #${n:02x},cur_bank.w',
+                        f'move.l bank_dtab+{4 * n},cur_dtab.w', f'movea.l bank_base+{4 * n},a4', f'{lab}:']
             return [f'; write to ${a:04x} ignored']
         if k == 'V': return ['move.b d0,d7', f'move.w #${a:04x},d6', 'jsr vram_wr']
         if k == 'O': return ['move.b d0,d7', f'move.w #${a:04x},d6', 'jsr oam_wr']
@@ -1033,6 +1052,16 @@ class Recomp:
                     lines.append('\tmove d4,ccr')
                 self.floc = 'C'
                 self.K = {}
+            if o in annot.HLE_BLOCK:
+                # a GB loop replaced by native code, which continues at the block's exit
+                end, name = annot.HLE_BLOCK[o]
+                lines.append(f'{label(o)}::')
+                lines.append(f'\tjsr {name}')
+                lines.append(f'\tmovea.w #${end:04x},a0')
+                lines.append('\tjmp gb_jump')
+                entries[o] = label(o)
+                prev_ft = None
+                continue
             if o in self.hle:
                 # the GB function itself is replaced: jumps into it go to the HAL too
                 lines.append(f'{label(o)}:')

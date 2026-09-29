@@ -11,23 +11,20 @@
 ; ---------------------------------------------------------------------------
 
 ; local RAM layout
-TBASE           equ     $f039f8
+TBASE           equ     $f03980
 OAML            equ     TBASE           ; 40 longs: OAM copy (one long per entry)
-MCKEY           equ     OAML+160        ; BG map cache: key, dirty, 32 decoded columns
+MCKEY           equ     OAML+160        ; map row cache (BG and window): key, dirty,
 MCDIRTY         equ     MCKEY+4
-MAPC            equ     MCKEY+8         ;   column: tile row 0 offset in GVRAM | attributes << 16
-WMCKEY          equ     MAPC+128        ; window map cache
-WMCDIRTY        equ     WMCKEY+4
-WMAPC           equ     WMCKEY+8
-REGS            equ     WMAPC+128       ; 16 longs: copy of $ff40-$ff4f
+MAPC            equ     MCKEY+8         ;   32 decoded columns, twice (21 tiles never wrap):
+                                        ;   tile row 0 offset in GVRAM | attributes << 16
+REGS            equ     MAPC+256        ; 16 longs: copy of $ff40-$ff4f
 OBC             equ     REGS+64         ; 32 OBJ colours (rgb)
 PT              equ     OBC+128         ; 8 BG palettes x 16 pixel pairs
-WLINE           equ     PT+512          ; window line counter
+TIB             equ     PT+512          ; BG tiles of the line: chunky row | priority << 16
+WLINE           equ     TIB+88          ; window line counter
 LB              equ     WLINE+4         ; 88 longs: pixel pairs, screen x at long (x+8)/2
 LBEND           equ     LB+352
-GRAWPAL         equ     $3100           ; raw palette bytes (main RAM): BG 64, OBJ 64
-TIB             equ     $3200           ; (main RAM) BG tiles of the line: chunky row | priority << 16
-TIW             equ     $3260           ; (main RAM) same for the window
+TIW             equ     $3260           ; (main RAM) window tiles of the line, as TIB
 SEL             equ     $32c0           ; (main RAM) up to 10 selected sprites
 
                 .phrase
@@ -59,8 +56,6 @@ oc_l:           store   r1,(r0)
                 addqt   #4,r0
                 movei   #MCDIRTY,r0
                 store   r0,(r0)
-                movei   #WMCDIRTY,r0
-                store   r0,(r0)
                 movei   #$0f0f,r0
                 moveta  r0,r0
                 movei   #$3333,r0
@@ -89,59 +84,19 @@ m_wait:         load    (r20),r0
                 jump    t,(r3)
                 nop
 
-; ---- VRAM byte (op 0/1): r2 = op*4
+; ---- VRAM byte (op 0/1), maps only (tile data comes as blocks): r2 = op*4
 h_vram:
                 move    r1,r4
                 movei   #$1fff,r5
-                and     r5,r4                   ; offset in the bank
+                and     r5,r4
                 shlq    #11,r2                  ; bank * $2000
-                move    r4,r7
-                add     r2,r7
-                add     r23,r7                  ; address
+                add     r2,r4
+                add     r23,r4
                 move    r1,r5
                 shrq    #16,r5
-                movei   #$ff,r6
-                and     r6,r5                   ; value
-                movei   #$1800,r6
-                cmp     r6,r4
-                movei   #hv_tile,r6
-                jump    cs,(r6)
-                nop
-                storeb  r5,(r7)                 ; maps: raw bytes
+                storeb  r5,(r4)                 ; (low byte)
                 movei   #MCDIRTY,r6
                 store   r6,(r6)
-                movei   #WMCDIRTY,r6
-                store   r6,(r6)
-                jump    t,(r19)
-                nop
-hv_tile:        ; spread the byte on the even bits (bit 7 -> bit 14)
-                move    r5,r6
-                shlq    #4,r6
-                or      r6,r5
-                movefa  r0,r6                   ; $0f0f
-                and     r6,r5
-                move    r5,r6
-                shlq    #2,r6
-                or      r6,r5
-                movefa  r1,r6                   ; $3333
-                and     r6,r5
-                move    r5,r6
-                shlq    #1,r6
-                or      r6,r5
-                movei   #$5555,r6
-                and     r6,r5
-                move    r7,r8
-                bclr    #0,r8
-                loadw   (r8),r9                 ; chunky row
-                movei   #$aaaa,r6
-                btst    #0,r7
-                jr      eq,hv_lo
-                nop
-                shlq    #1,r5                   ; high bit plane: odd bits
-                movei   #$5555,r6
-hv_lo:          and     r6,r9
-                or      r5,r9
-                storew  r9,(r8)
                 jump    t,(r19)
                 nop
 
@@ -160,60 +115,17 @@ h_reg:
                 jump    t,(r19)
                 nop
 
-; ---- OAM byte
+; ---- OAM entry: w2 = offset ; long: the entry (y x tile attr)
 h_oam:
-                move    r1,r4
-                movei   #$ff,r5
-                and     r5,r4                   ; offset
-                move    r1,r7
-                shrq    #16,r7
-                and     r5,r7                   ; value
-                moveq   #3,r6
-                and     r4,r6
-                moveq   #3,r8
-                xor     r8,r6
-                shlq    #3,r6                   ; bit position of the byte in its long
-                neg     r6                      ; (negative: left shifts)
-                shrq    #2,r4
-                shlq    #2,r4
+                movei   #$fc,r4
+                and     r1,r4
                 add     r29,r4
-                load    (r4),r9
-                sh      r6,r5
-                sh      r6,r7
-                not     r5
-                and     r5,r9
-                or      r7,r9
-                store   r9,(r4)
+                load    (r22),r7
+                addqt   #4,r22
+                store   r7,(r4)
                 jump    t,(r19)
                 nop
 
-; ---- palette byte (op 3 BG, op 4 OBJ)
-h_pal:
-                move    r1,r4
-                movei   #$3f,r5
-                and     r5,r4                   ; r4 = index
-                move    r1,r5
-                shrq    #16,r5
-                movei   #$ff,r6
-                and     r6,r5                   ; r5 = value
-                movei   #GRAWPAL,r6
-                move    r2,r7
-                subq    #12,r7
-                shlq    #4,r7                   ; 0 (BG) or 64 (OBJ)
-                add     r7,r6                   ; raw base
-                move    r6,r8
-                add     r4,r8
-                storeb  r5,(r8)
-                bclr    #0,r4
-                move    r6,r8
-                add     r4,r8
-                loadb   (r8),r9
-                addqt   #1,r8
-                loadb   (r8),r10
-                shlq    #8,r10
-                or      r10,r9                  ; r9 = GB colour bbbbbgggggrrrrr
-                subq    #12,r2                  ; 0 BG, 4 OBJ
-                move    r19,r30
 ; r4 = even byte index, r9 = GB colour, r2 = 0 (BG) / 4 (OBJ); returns through r30
 ; uses r4 r5 r6 r10 r11 r12
 hp_set:
@@ -277,7 +189,8 @@ hp_obj:
                 jump    t,(r30)
                 nop
 
-; ---- road line (op 16): b1 = SCY, b3 = SCX ; long: address of 8 palette bytes (BG palette 0)
+; ---- road line (op 16): b1 = SCY, b2 = line to render then (0: none), b3 = SCX ;
+;      long: address of 8 palette bytes (BG palette 0)
 h_roadln:
                 move    r1,r5
                 shrq    #16,r5
@@ -299,11 +212,6 @@ rl_loop:        loadb   (r7),r9
                 addqt   #1,r7
                 loadb   (r7),r10
                 addqt   #1,r7
-                movei   #GRAWPAL,r6
-                add     r16,r6
-                storeb  r9,(r6)
-                addqt   #1,r6
-                storeb  r10,(r6)
                 shlq    #8,r10
                 or      r10,r9
                 move    r16,r4
@@ -315,7 +223,13 @@ rl_next:        addq    #2,r16
                 movei   #rl_loop,r12
                 jump    ne,(r12)
                 nop
-                jump    t,(r19)
+                shrq    #8,r1                   ; b2: line to render now (0: none)
+                move    r1,r4
+                shlq    #24,r4
+                jump    eq,(r19)
+                nop
+                movei   #h_line,r4
+                jump    t,(r4)
                 nop
 
 ; ---- scroll (op 15): b1 = SCY, b3 = SCX
@@ -348,13 +262,6 @@ h_grad3:
 g3_loop:        btst    #0,r3
                 jump    eq,(r17)
                 nop
-                movei   #GRAWPAL,r6
-                add     r16,r6
-                storeb  r9,(r6)
-                move    r9,r5
-                shrq    #8,r5
-                addqt   #1,r6
-                storeb  r5,(r6)
                 move    r16,r4
                 movei   #hp_set,r12
                 jump    t,(r12)
@@ -366,60 +273,6 @@ g3_next:        addq    #8,r16
                 nop
                 jump    t,(r19)
                 nop
-; ---- whole palette (op 13): b1 = palette 0-7 BG / 8-15 OBJ, then 8 raw bytes
-h_pal4:
-                move    r1,r16
-                shrq    #16,r16
-                moveq   #15,r5
-                and     r5,r16                  ; palette
-                load    (r22),r7
-                addqt   #4,r22
-                load    (r22),r8
-                addqt   #4,r22
-                movei   #GRAWPAL,r6
-                move    r16,r5
-                shlq    #3,r5
-                add     r5,r6
-                store   r7,(r6)
-                addqt   #4,r6
-                store   r8,(r6)
-                moveq   #0,r2
-                btst    #3,r16
-                jr      eq,p4_bg
-                nop
-                moveq   #4,r2
-p4_bg:          moveq   #7,r5
-                and     r5,r16
-                shlq    #3,r16                  ; byte index of colour 0
-                moveq   #0,r3                   ; colour number
-                movei   #p4_next,r17
-p4_loop:        move    r7,r9
-                shrq    #24,r9                  ; low byte
-                move    r7,r10
-                shlq    #8,r10
-                shrq    #24,r10
-                shlq    #8,r10
-                or      r10,r9                  ; colour
-                shlq    #16,r7
-                move    r16,r4
-                move    r3,r5
-                shlq    #1,r5
-                add     r5,r4
-                movei   #hp_set,r12
-                jump    t,(r12)
-                move    r17,r30
-p4_next:        addq    #1,r3
-                cmpq    #2,r3
-                jr      ne,p4_n2
-                nop
-                move    r8,r7
-p4_n2:          cmpq    #4,r3
-                movei   #p4_loop,r12
-                jump    ne,(r12)
-                nop
-                jump    t,(r19)
-                nop
-
 ; ---- whole colour (op 11 BG, 12 OBJ): b1 = colour index 0-31, w2 = GB colour
 h_col:
                 move    r1,r9
@@ -431,16 +284,6 @@ h_col:
                 shlq    #1,r4                   ; byte index
                 subq    #32,r2
                 subq    #12,r2                  ; 0 BG, 4 OBJ
-                movei   #GRAWPAL,r6
-                move    r2,r7
-                shlq    #4,r7
-                add     r7,r6
-                add     r4,r6
-                storeb  r9,(r6)
-                move    r9,r5
-                shrq    #8,r5
-                addqt   #1,r6
-                storeb  r5,(r6)
                 movei   #hp_set,r12
                 jump    t,(r12)
                 move    r19,r30
@@ -462,8 +305,6 @@ h_block:
                 addqt   #4,r22
                 shrq    #2,r6
                 movei   #MCDIRTY,r7             ; (a block may reach the maps)
-                store   r7,(r7)
-                movei   #WMCDIRTY,r7
                 store   r7,(r7)
                 movei   #$1800,r5
                 movei   #$00ff00ff,r10
@@ -577,8 +418,8 @@ mg_ld:          moveq   #0,r8
                 subqt   #4,r6
                 store   r5,(r6)
                 move    r4,r5                   ; map bytes
-                move    r9,r6                   ; cache
-                movei   #$2000,r15
+                move    r9,r15                  ; cache
+                movei   #$2000,r6
                 ; tile offset = (t ^ r16) * 16 + r17
                 moveq   #0,r16
                 moveq   #0,r17
@@ -592,7 +433,7 @@ mg_u:           moveq   #16,r10
                 movei   #mg_l,r12
 mg_l:           loadb   (r5),r7                 ; tile
                 move    r5,r8
-                add     r15,r8
+                add     r6,r8
                 loadb   (r8),r8                 ; attributes
                 xor     r16,r7
                 shlq    #4,r7
@@ -600,11 +441,12 @@ mg_l:           loadb   (r5),r7                 ; tile
                 btst    #3,r8
                 jr      eq,mg_b
                 nop
-                add     r15,r7                  ; bank 1
+                add     r6,r7                   ; bank 1
 mg_b:           shlq    #16,r8
                 or      r8,r7
-                store   r7,(r6)
-                addqt   #4,r6
+                store   r7,(r15)
+                store   r7,(r15+32)             ; (second copy)
+                addqt   #4,r15
                 subq    #1,r10
                 jump    ne,(r12)
                 addqt   #1,r5
@@ -615,6 +457,10 @@ mg_b:           shlq    #16,r8
 ; render line r1 & $ff
 ; ---------------------------------------------------------------------------
 h_line:
+                .if     NOGPULINE               ; (measurement: no line rendering)
+                jump    t,(r19)
+                nop
+                .endif
                 movei   #$ff,r2
                 move    r1,r0
                 and     r2,r0                   ; r0 = L
@@ -655,6 +501,8 @@ bg_mc:          moveq   #7,r7
                 and     r5,r6                   ; fine scroll
                 moveta  r6,r2                   ; (kept in the alternate r2)
                 shrq    #3,r5                   ; first column
+                shlq    #2,r5
+                add     r5,r9                   ; its decoded entry
                 moveq   #21,r10
                 movei   #TIB,r4
                 moveq   #8,r14
@@ -713,7 +561,7 @@ wn_m:           add     r23,r4
                 shrq    #3,r5
                 shlq    #5,r5
                 add     r5,r4                   ; map row
-                movei   #WMAPC,r9
+                movei   #MAPC,r9
                 movei   #wn_mc,r30
                 movei   #mc_get,r2
                 jump    t,(r2)
@@ -829,6 +677,10 @@ sd_8:           shlq    #4,r16
                 add     r12,r16
 sd_b0:          add     r23,r16
                 loadw   (r16),r11               ; chunky row
+                cmpq    #0,r11
+                movei   #sd_end,r12
+                jump    eq,(r12)                ; transparent row
+                nop
                 ; palette
                 move    r17,r6
                 moveq   #7,r7
@@ -846,7 +698,108 @@ sd_b0:          add     r23,r16
                 moveq   #0,r10
                 moveq   #0,r9
                 subq    #2,r9                   ; -2
-sd_nh:          moveq   #8,r7                   ; pixels
+sd_nh:
+                ; fast path: the 8 pixels on screen and left of the window
+                movei   #sd_slow,r16
+                movei   #153,r12
+                cmp     r12,r8                  ; x - 153
+                jump    cc,(r16)                ; (x < 0 is huge unsigned too)
+                nop
+                move    r8,r12
+                addq    #8,r12
+                cmp     r12,r13                 ; window start - (x + 8)
+                jump    cs,(r16)
+                nop
+                ; r2 = BG in front of each pixel: bits 30, 28 ... 16 (pixel 0 first)
+                moveq   #0,r2
+                btst    #0,r1                   ; LCDC.0: BG/window master priority
+                movei   #sf_nb,r12
+                jump    eq,(r12)
+                nop
+                movefa  r2,r6                   ; fine scroll
+                add     r8,r6                   ; BG pixel p of screen x
+                move    r6,r12
+                shrq    #3,r12
+                shlq    #2,r12
+                movei   #TIB,r16
+                add     r12,r16
+                load    (r16),r2                ; tile p/8: row | priority << 16
+                addqt   #4,r16
+                load    (r16),r12               ; next tile
+                moveq   #7,r16
+                and     r16,r6
+                shlq    #1,r6
+                neg     r6                      ; left shift by 2*(p & 7)
+                move    r2,r15
+                shrq    #16,r15
+                neg     r15
+                shlq    #16,r15                 ; priority of tile p/8 -> high word
+                move    r12,r16
+                shrq    #16,r16
+                neg     r16
+                shrq    #16,r16                 ; priority of the next tile -> low word
+                or      r16,r15
+                btst    #7,r17
+                jr      eq,sf_np
+                nop
+                moveq   #0,r15
+                not     r15                     ; OBJ behind BG colours 1-3
+sf_np:          shlq    #16,r2
+                and     r28,r12
+                or      r12,r2                  ; the 16 BG pixels from p & ~7
+                sh      r6,r2
+                sh      r6,r15
+                move    r2,r12
+                shrq    #1,r12
+                or      r12,r2                  ; BG colour != 0 (even bits)
+                and     r15,r2
+sf_nb:          move    r8,r16
+                addq    #8,r16
+                shrq    #1,r16
+                shlq    #2,r16
+                add     r26,r16                 ; long of pixel x
+                moveq   #8,r7
+                movei   #sf_sk,r30
+                movei   #sf_px,r18
+sf_px:          move    r11,r6
+                sh      r10,r6
+                moveq   #3,r12
+                and     r12,r6                  ; colour number
+                jump    eq,(r30)
+                nop
+                btst    #30,r2
+                jump    ne,(r30)                ; BG in front
+                shlq    #2,r6
+                load    (r14+r6),r12            ; colour
+                load    (r16),r17
+                btst    #0,r8
+                jr      ne,sf_lo
+                nop
+                shlq    #16,r12
+                jr      t,sf_st
+                and     r28,r17
+sf_lo:          shrq    #16,r17
+                shlq    #16,r17
+sf_st:          or      r12,r17
+                store   r17,(r16)
+sf_sk:          btst    #0,r8
+                jr      eq,sf_ev
+                addq    #1,r8
+                addqt   #4,r16                  ; (odd pixel done: next long)
+sf_ev:          sub     r9,r10
+                shlq    #2,r2
+                subq    #1,r7
+                jump    ne,(r18)
+                nop
+                moveq   #8,r15                  ; (height again)
+                btst    #2,r1
+                jr      eq,sf_h8
+                nop
+                moveq   #16,r15
+sf_h8:          movei   #sd_end,r12
+                jump    t,(r12)
+                nop
+sd_slow:        moveq   #8,r7                   ; pixels
                 movei   #sd_skip,r30
                 movei   #sd_px,r18
 sd_px:
@@ -968,11 +921,8 @@ tl_even:
                 movei   #te_hr,r1
                 movei   #t_hflip,r8
                 movei   #te_l,r18
-te_l:           move    r5,r6
-                shlq    #27,r6
-                shrq    #25,r6
-                add     r9,r6
-                load    (r6),r16                ; decoded column
+te_l:           load    (r9),r16                ; decoded column
+                addqt   #4,r9
                 move    r16,r2
                 and     r28,r2
                 add     r23,r2
@@ -1016,7 +966,6 @@ te_hr:          move    r16,r6
                 load    (r15+r6),r7
                 store   r7,(r14+3)
                 addqt   #16,r14
-                addq    #1,r5
                 subq    #1,r10
                 jump    ne,(r18)
                 nop
@@ -1031,11 +980,8 @@ tl_odd:
                 movei   #to_hr,r1
                 movei   #t_hflip,r8
                 movei   #to_l,r18
-to_l:           move    r5,r6
-                shlq    #27,r6
-                shrq    #25,r6
-                add     r9,r6
-                load    (r6),r16                ; decoded column
+to_l:           load    (r9),r16                ; decoded column
+                addqt   #4,r9
                 move    r16,r2
                 and     r28,r2
                 add     r23,r2
@@ -1090,7 +1036,6 @@ to_hr:          move    r16,r6
                 shlq    #16,r7
                 store   r7,(r14+4)
                 addqt   #16,r14
-                addq    #1,r5
                 subq    #1,r10
                 jump    ne,(r18)
                 nop
@@ -1122,7 +1067,7 @@ t_hflip:
                 nop
 
                 .long
-jtab:           dc.l    h_vram,h_vram,h_reg,h_pal,h_pal,h_oam,h_block,h_oamall,h_line,h_frame,h_wrap,h_col,h_col,h_pal4,h_grad3,h_scroll,h_roadln
+jtab:           dc.l    h_vram,h_vram,h_reg,main,main,h_oam,h_block,h_oamall,h_line,h_frame,h_wrap,h_col,h_col,main,h_grad3,h_scroll,h_roadln
 gpu_end_addr::
                 .68000
                 .phrase

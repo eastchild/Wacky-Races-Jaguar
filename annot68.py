@@ -8,7 +8,18 @@ COVDIRS = ['out_acc', 'out_all', 'out_cov', 'out_dump', 'out_idump', 'out_intro'
 # GB functions replaced by HAL routines (called with jsr, return with rts)
 HLE_FUNC = {
     0x3E9F: 'hal_wait_ly91',      # wait LY == $91
+    0x3E58: 'hal_wait_hbl',       # wait STAT mode != 0 then mode 0 (menus)
     0x32AE: 'hle_road',           # road renderer lines 73-142 (hal/hle.s)
+    0x30BC: 'hle_30bc',           # (DE) = (HL) + (BC) table loop (race, every frame)
+    0x30FF: 'hle_30ff',           # (DE) = (HL) - (BC)
+    0x8FA00: 'hle_23_7a00',       # 23:7A00: 120-byte copy (menus, every frame)
+}
+
+# GB loops replaced by native code: rom offset of the loop entry -> (GB address where the
+# code continues, HAL routine). Nothing else may jump into the loop body.
+HLE_BLOCK = {
+    0x183E0: (0x43EE, 'hle_06_43e0'),  # 6:43E0 challenge menu: sky gradient, one colour per line
+    0x184C4: (0x44D2, 'hle_06_43e0'),  # 6:44C4 same loop (other half of the frame)
 }
 
 # calls/jumps into GB RAM code with a fixed meaning

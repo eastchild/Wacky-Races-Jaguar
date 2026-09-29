@@ -39,9 +39,13 @@ ob_byte::
                 andi.w  #$3f,d6
                 lea     obpal_raw.w,a0
                 move.b  d7,(a0,d6.w)
-                move.b  #LC_OBPAL,(a6)+
+                move.b  #LC_OBCOL,(a6)+         ; (the whole colour)
+                move.w  d6,d7
+                lsr.w   #1,d7
                 move.b  d7,(a6)+
-                move.w  d6,(a6)+
+                add.w   d7,d7
+                move.b  1(a0,d7.w),(a6)+
+                move.b  (a0,d7.w),(a6)+
                 cmpa.l  log_limit.w,a6
                 bcc     log_slow
                 rts
@@ -67,28 +71,40 @@ pal4::
                 tst.b   rnd.w
                 beq     hle_skip
                 st      grad_last.w
-                move.b  #LC_PAL,(a6)+
-                move.b  d6,(a6)+
-                clr.w   (a6)+
                 andi.w  #15,d6
-                lsl.w   #3,d6
+                move.w  d6,d7
+                lsl.w   #3,d7
                 lea     bgpal_raw.w,a1          ; (obpal_raw follows)
-                adda.w  d6,a1
-                move.w  a0,d7
-                btst    #0,d7
-                bne.s   .odd
-                move.l  (a0)+,d7
-                move.l  d7,(a1)+
-                move.l  d7,(a6)+
-                move.l  (a0)+,d7
-                move.l  d7,(a1)+
-                move.l  d7,(a6)+
-                bra.s   .ck
-.odd:           moveq   #7,d7
-.c:             move.b  (a0),(a1)+
-                move.b  (a0)+,(a6)+
+                adda.w  d7,a1
+                moveq   #7,d7
+.c:             move.b  (a0)+,(a1)+
                 dbra    d7,.c
-.ck:            cmpa.l  log_limit.w,a6
+                subq.l  #8,a1
+                moveq   #LC_BGCOL,d7            ; 4 whole colours
+                bclr    #3,d6
+                beq.s   .bg
+                moveq   #LC_OBCOL,d7
+.bg:            lsl.b   #2,d6                   ; colour index of colour 0
+                move.b  d7,(a6)+
+                move.b  d6,(a6)+
+                move.b  1(a1),(a6)+
+                move.b  (a1),(a6)+
+                addq.b  #1,d6
+                move.b  d7,(a6)+
+                move.b  d6,(a6)+
+                move.b  3(a1),(a6)+
+                move.b  2(a1),(a6)+
+                addq.b  #1,d6
+                move.b  d7,(a6)+
+                move.b  d6,(a6)+
+                move.b  5(a1),(a6)+
+                move.b  4(a1),(a6)+
+                addq.b  #1,d6
+                move.b  d7,(a6)+
+                move.b  d6,(a6)+
+                move.b  7(a1),(a6)+
+                move.b  6(a1),(a6)+
+                cmpa.l  log_limit.w,a6
                 bcc     log_slow
                 rts
 ; colour 0 of BG palettes 0-2 := d7.w, BCPS := $92
@@ -110,17 +126,7 @@ grad_m::
                 move.l  d7,grad_last.w
                 move.b  #LC_GRAD3,(a6)+
                 move.b  d6,(a6)+
-                move.w  d7,(a6)+
-                lea     bgpal_raw.w,a0
-.gl:             lsr.b   #1,d6
-                bcc.s   .gn
-                move.b  d7,(a0)
-                ror.w   #8,d7
-                move.b  d7,1(a0)
-                ror.w   #8,d7
-.gn:             addq.l  #8,a0
-                tst.b   d6
-                bne.s   .gl
+                move.w  d7,(a6)+                ; (bgpal_raw not kept: per-line raster state)
                 cmpa.l  log_limit.w,a6
                 bcc     log_slow
 .gx:            rts
@@ -224,6 +230,163 @@ hle_1aac::
                 clr.b   $ca90+G(a5)
 .r:             st      gb_ime.w
                 cmp.b   d7,d7
+                rts
+
+; ---- 0:30BC / 0:30FF (race, every frame): (DE) := (HL) + (BC) / (HL) - (BC), BC HL E += 1,
+; ten at a time until E = $78 (A = $78, Z set). Fast path: BC in WRAMX, HL in ROMX, DE in WRAM0.
+hle_30bc::
+                moveq   #0,d7
+                bra.s   hle_30x
+hle_30ff::
+                moveq   #1,d7
+hle_30x:        movem.l d4-d5/a2,-(a7)
+                move.b  d7,d4                   ; subtract
+                moveq   #$78,d5
+                sub.b   d2,d5
+                andi.w  #$ff,d5                 ; count (0: 256)
+                bne.s   .n
+                move.w  #256,d5
+.n:             subq.w  #1,d5
+                cmp.w   #$d000,d1
+                bcs.s   .slow
+                cmp.w   #$df00,d1
+                bcc.s   .slow
+                cmp.w   #$4000,d3
+                bcs.s   .slow
+                cmp.w   #$7f00,d3
+                bcc.s   .slow
+                cmp.w   #$c000,d2
+                bcs.s   .slow
+                cmp.w   #$d000,d2
+                bcc.s   .slow
+                lea     (a3,d1.w),a0            ; BC
+                lea     (a4,d3.w),a1            ; HL
+                lea     (a5,d2.w),a2            ; DE
+                move.w  d5,d7
+                addq.w  #1,d7
+                add.w   d7,d1
+                add.w   d7,d3
+                tst.b   d4
+                bne.s   .sub
+.al:            move.b  (a1)+,d0
+                add.b   (a0)+,d0
+                move.b  d0,(a2)+
+                dbra    d5,.al
+                bra.s   .end
+.sub:           move.b  (a1)+,d0
+                sub.b   (a0)+,d0
+                move.b  d0,(a2)+
+                dbra    d5,.sub
+                bra.s   .end
+.slow:          move.w  d3,d6                   ; generic: byte by byte
+                jsr     gb_rd
+                move.b  d7,d0
+                move.w  d1,d6
+                jsr     gb_rd
+                tst.b   d4
+                bne.s   .ss
+                add.b   d7,d0
+                bra.s   .sw
+.ss:            sub.b   d7,d0
+.sw:            move.b  d0,d7
+                move.w  d2,d6
+                jsr     gb_wr
+                addq.w  #1,d1
+                addq.w  #1,d3
+                addq.b  #1,d2
+                dbra    d5,.slow
+.end:           move.b  #$78,d2
+                move.b  #$78,d0
+                movem.l (a7)+,d4-d5/a2
+                cmp.b   d0,d0                   ; (cp $78: Z, no carry)
+                rts
+
+; ---- 23:7A00 (menus, every frame): ld d,$1e / 30 x 4 x (ld a,(hl+) / ld (bc),a / inc c)
+; = 120 bytes (HL) -> (B:C), C wrapping in its page; D = 0, Z set, carry kept
+hle_23_7a00::
+                move    sr,-(a7)
+                move.l  d5,-(a7)
+                moveq   #119,d5
+                cmp.w   #$4000,d3               ; fast path: HL in ROMX, BC in WRAM0
+                bcs.s   .slow
+                cmp.w   #$7f80,d3
+                bcc.s   .slow
+                cmp.w   #$c000,d1
+                bcs.s   .slow
+                cmp.w   #$d000,d1
+                bcc.s   .slow
+                lea     (a4,d3.w),a0
+.cl:            move.b  (a0)+,d0
+                move.b  d0,(a5,d1.w)
+                addq.b  #1,d1
+                dbra    d5,.cl
+                add.w   #120,d3
+                bra.s   .end
+.slow:          move.w  d3,d6
+                jsr     gb_rd
+                move.b  d7,d0
+                addq.w  #1,d3
+                move.b  d0,d7
+                move.w  d1,d6
+                jsr     gb_wr
+                addq.b  #1,d1
+                dbra    d5,.slow
+.end:           andi.w  #$00ff,d2               ; D = 0
+                move.l  (a7)+,d5
+                move    (a7)+,sr
+                ori     #4,ccr                  ; (dec d: Z)
+                rts
+
+; ---- 6:43E0 (challenge menu loop): B lines: wait HBlank (0:3E58), BCPS := $80, colour 0
+; of BG palette 0 := word (HL+). Exit: B = 0, HL += 2B, A = last byte, BCPS $82, Z, no carry.
+hle_06_43e0::
+                move.l  d5,-(a7)
+                moveq   #0,d5
+                move.w  d1,d5
+                lsr.w   #8,d5                   ; B
+                bne.s   .n
+                move.w  #256,d5
+.n:             subq.w  #1,d5
+.lp:            bsr     hal_wait_hbl
+                cmp.w   #$4000,d3               ; colour (HL), HL += 2
+                bcs.s   .gr
+                cmp.w   #$7ffe,d3
+                bcc.s   .gr
+                move.b  (a4,d3.w),d0            ; (ROMX: direct)
+                move.b  1(a4,d3.w),d7
+                addq.w  #2,d3
+                lsl.w   #8,d7
+                move.b  d0,d7
+                bra.s   .gc
+.gr:            move.w  d3,d6
+                jsr     gb_rd
+                move.b  d7,d0
+                addq.w  #1,d3
+                move.w  d3,d6
+                jsr     gb_rd
+                addq.w  #1,d3
+                lsl.w   #8,d7
+                move.b  d0,d7
+.gc:
+                st      grad_last.w
+                lea     bgpal_raw.w,a0
+                move.b  d0,(a0)
+                move.w  d7,d6
+                lsr.w   #8,d6
+                move.b  d6,1(a0)
+                move.b  #LC_BGCOL,(a6)+         ; (always logged, as io_w_bcpd)
+                clr.b   (a6)+
+                move.w  d7,(a6)+
+                cmpa.l  log_limit.w,a6
+                bcs.s   .nl
+                bsr     log_slow
+.nl:            dbra    d5,.lp
+                move.b  #$82,R_BCPS(a5)
+                andi.w  #$00ff,d1               ; B = 0
+                lsr.w   #8,d7
+                move.b  d7,d0                   ; A = last byte
+                move.l  (a7)+,d5
+                move    #4,ccr                  ; (dec b: Z ; carry clear since 3E58)
                 rts
 
 ; ---- 0:1A73 results screen gradient: colour 0 of BG palettes 0-3 and 6 ---------
@@ -377,7 +540,35 @@ sc_const::
 ; OCPS := d6, then d5.b bytes from a1 (a1 advanced), final OCPS as the GB auto-increment
 ob_bytes_a1::
                 andi.w  #$3f,d6
-.bb:             move.b  (a1)+,d7
+                tst.b   rnd.w
+                beq.s   .nd                     ; undrawn: final OCPS only (as ob_byte)
+                btst    #0,d6
+                bne.s   .bb
+                btst    #0,d5
+                bne.s   .bb
+                lea     obpal_raw.w,a0          ; whole colours: one command each
+.pp:            move.b  (a1)+,(a0,d6.w)
+                move.b  (a1)+,1(a0,d6.w)
+                move.b  #LC_OBCOL,(a6)+
+                move.w  d6,d7
+                lsr.w   #1,d7
+                move.b  d7,(a6)+
+                move.b  1(a0,d6.w),(a6)+
+                move.b  (a0,d6.w),(a6)+
+                addq.b  #2,d6
+                andi.b  #$3f,d6
+                subq.b  #2,d5
+                bne.s   .pp
+                cmpa.l  log_limit.w,a6
+                bcs.s   .fin
+                move.w  d6,-(a7)
+                bsr     log_slow
+                move.w  (a7)+,d6
+                bra.s   .fin
+.nd:            add.b   d5,d6
+                andi.b  #$3f,d6
+                bra.s   .fin
+.bb:            move.b  (a1)+,d7
                 move.w  d6,-(a7)
                 bsr     ob_byte
                 move.w  (a7)+,d6
@@ -385,7 +576,7 @@ ob_bytes_a1::
                 andi.b  #$3f,d6
                 subq.b  #1,d5
                 bne.s   .bb
-                ori.b   #$80,d6
+.fin:           ori.b   #$80,d6
                 move.b  d6,R_OCPS(a5)
                 rts
 ; OCPS := d6, 6 bytes from GB address d7.w (ROM0 / WRAM0: flat image)
@@ -522,18 +713,257 @@ hle_road::
                 move.w  #$ff4f,d6
                 bsr     io_w_vbk
                 bsr     rd_wait73
-.go:            move.b  cur_bank.w,d3
+.go:            sf      rl_rend.w
+                clr.l   rl_tbl.w                ; per-frame road palette source setup
+                tst.b   rnd.w
+                beq.s   .nt
+                move.b  $ff9a+G(a5),d7
+                andi.w  #$3f,d7
+                add.w   d7,d7
+                add.w   d7,d7
+                lea     bank_base.w,a0
+                move.l  (a0,d7.w),rl_pbase.w
+                tst.b   $ff97+G(a5)
+                bne.s   .nt
+                move.b  $ff99+G(a5),d7          ; word table (FF99:FF98) + 2*row in WRAM0
+                lsl.w   #8,d7
+                move.b  $ff98+G(a5),d7
+                cmp.w   #$c000,d7
+                bcs.s   .nt
+                cmp.w   #$ce00,d7
+                bcc.s   .nt
+                lea     (a5,d7.w),a0
+                move.l  a0,rl_tbl.w
+.nt:            move.b  cur_bank.w,d3
                 bsr     rh_load
-                moveq   #0,d4                   ; n
+                moveq   #0,d4                   ; n (word: index)
 .line:          btst    #0,d4
-                bne.s   .odd
-                bsr     rd_even
+                bne     .odd
+                ; ---- even line (0:38DC): object descriptor C655+n/2
+                move.w  d4,d7
+                lsr.w   #1,d7
+                lea     $c655+G(a5),a1
+                move.b  (a1,d7.w),d5
+                bmi     .new
+                moveq   #0,d7                   ; continuing object: offset d5 in its data
+                move.b  $ff8a+G(a5),d7
+                lea     $c600+G(a5),a1
+                adda.w  d7,a1
+                move.b  (a1)+,d7
+                FBANK
+                moveq   #0,d6
+                move.b  1(a1),d6
+                lsl.w   #8,d6
+                move.b  (a1),d6
+                andi.w  #$ff,d5
+                add.w   d5,d6
+                cmp.w   #$4000,d6
+                bcs.s   .eg
+                cmp.w   #$7fff,d6
+                bcc.s   .eg
+                move.b  (a4,d6.w),$ff8b+G(a5)   ; (ROMX: direct)
+                move.b  1(a4,d6.w),$ff8c+G(a5)
+                bra     .row
+.eg:            bsr     rd8
+                move.b  d7,$ff8b+G(a5)
+                bsr     rd8
+                move.b  d7,$ff8c+G(a5)
+                bra     .row
+.new:           move.b  d5,$ff8a+G(a5)
+                moveq   #0,d7
+                move.b  d5,d7
+                lea     $c600+G(a5),a1
+                adda.w  d7,a1
+                move.b  (a1)+,d7
+                FBANK
+                moveq   #0,d6
+                move.b  1(a1),d6
+                lsl.w   #8,d6
+                move.b  (a1),d6
+                bsr     rd8
+                move.b  d7,R_HDMA2(a5)
+                bsr     rd8
+                move.b  d7,R_HDMA1(a5)
+                lsl.w   #8,d7                   ; new DMA source
+                move.b  R_HDMA2(a5),d7
+                andi.w  #$fff0,d7
+                move.w  d7,rh_src.w
+                sf      rh_valid.w
+                bsr     rd8
+                move.b  d7,$ff8b+G(a5)
+                bsr     rd8
+                move.b  d7,$ff8c+G(a5)
                 bra.s   .row
-.odd:           bsr     rd_odd
-.row:           bsr     rd_row
-                addq.b  #1,d4
+                ; ---- odd line (0:3988): OAM buffer entry C000+4*(n/2) from the current object
+.odd:           move.b  d4,$ff8e+G(a5)
+                moveq   #0,d7
+                move.b  $ff8a+G(a5),d7
+                lea     $c600+G(a5),a1
+                adda.w  d7,a1
+                cmp.b   #69,d4                  ; (same object, same bank as the even line
+                bne.s   .sb                     ;  before: only the final MBC state needs it)
+                move.b  (a1),d7
+                FBANK
+.sb:            move.w  d4,d6
+                andi.b  #$fe,d6
+                add.w   d6,d6
+                lea     $c000+G(a5),a0
+                adda.w  d6,a0
+                move.b  $ff8b+G(a5),d7
+                add.b   -1(a1),d7
+                move.b  d7,(a0)+
+                move.b  $ff8c+G(a5),d7
+                add.b   -2(a1),d7
+                move.b  d7,(a0)+
+                move.b  $ff8d+G(a5),d7
+                move.b  d7,(a0)+
+                addq.b  #2,d7
+                move.b  d7,$ff8d+G(a5)
+                move.b  -3(a1),(a0)
+                ; ---- line part: C6[n] = road row + 1 (0 = sky), cleared
+.row:           lea     $c600+G(a5),a1
+                moveq   #0,d5
+                move.b  (a1,d4.w),d5
+                clr.b   (a1,d4.w)
+                tst.b   d5
+                beq     .sky
+                subq.b  #1,d5                   ; row
+                tst.b   rnd.w
+                beq.s   .adv                    ; undrawn: no palette pointer
+                move.l  rl_tbl.w,d7             ; WRAM0 pointer table (set up per frame)
+                beq.s   .ptg
+                movea.l d7,a0
+                move.w  d5,d7
+                add.w   d7,d7
+                move.b  1(a0,d7.w),d0
+                lsl.w   #8,d0
+                move.b  (a0,d7.w),d0            ; GB address of the 8 palette bytes
+                cmp.w   #$4000,d0
+                bcc.s   .ptr
+                lea     (a5,d0.w),a0
+                move.l  a0,d0
+                bra.s   .adv
+.ptr:           movea.l rl_pbase.w,a0
+                adda.w  d0,a0
+                move.l  a0,d0
+                bra.s   .adv
+.ptg:           bsr     rd_ppg                  ; (other tables)
+                ; ---- line 73+n is drawn, its HBlank DMA block is copied, LY advances
+.adv:           tst.b   gb_ime.w
+                bne     .slw
+                tst.b   rnd.w
+                beq.s   .nl
+                tst.b   rl_rend.w               ; (rendered by the last LC_ROADLN)
+                bne.s   .rr
+                move.l  #LC_LINE<<24,d7
+                move.b  v_ly.w,d7
+                move.l  d7,(a6)+
+.rr:            sf      rl_rend.w
+                moveq   #7,d7
+                and.b   v_ly.w,d7
+                bne.s   .nl
+                PUBLISH d7
+.nl:            tst.b   strm.w                  ; HBlank DMA block rh_src -> rh_dst
+                beq     .skp                    ; (tiles not needed by the next frame)
+                tst.b   rh_valid.w
+                bne.s   .v
+                move.w  rh_src.w,d7
+                bsr     src_ptr
+                move.l  a0,rh_ptr.w
+                st      rh_valid.w
+.v:             movea.l rh_ptr.w,a0
+                move.w  rh_dst.w,d6
+                lea     (a2,d6.w),a1
+                move.l  (a0),d1                 ; an unchanged block is not copied
+                cmp.l   (a1),d1
+                bne.s   .cp
+                move.l  4(a0),d1
+                cmp.l   4(a1),d1
+                bne.s   .cp
+                move.l  8(a0),d1
+                cmp.l   8(a1),d1
+                bne.s   .cp
+                move.l  12(a0),d1
+                cmp.l   12(a1),d1
+                beq.s   .ha
+.cp:            move.b  #LC_BLOCK,(a6)+
+                move.b  vbk_cur.w,(a6)+
+                move.w  d6,(a6)+
+                moveq   #16,d1
+                move.l  d1,(a6)+
+                move.l  (a0)+,d1
+                move.l  d1,(a1)+
+                move.l  d1,(a6)+
+                move.l  (a0)+,d1
+                move.l  d1,(a1)+
+                move.l  d1,(a6)+
+                move.l  (a0)+,d1
+                move.l  d1,(a1)+
+                move.l  d1,(a6)+
+                move.l  (a0)+,d1
+                move.l  d1,(a1)+
+                move.l  d1,(a6)+
+.ha:            addi.l  #16,rh_ptr.w
+                bra.s   .hs
+.skp:           sf      rh_valid.w              ; (pointer recomputed when streaming resumes)
+                move.w  rh_dst.w,d6
+.hs:            addi.w  #16,rh_src.w
+                addi.w  #16,d6
+                andi.w  #$1ff0,d6
+                ori.w   #$8000,d6
+                move.w  d6,rh_dst.w
+                addq.b  #1,v_ly.w               ; (v_phase, DIV: at the end of the road)
+                cmpa.l  log_limit.w,a6
+                bcs.s   .sc
+                bsr     log_slow
+                ; ---- SCY / SCX of line 74+n, road palette
+.sc:            move.b  #$3e,d7                 ; SCY = row + $3E - n
+                sub.b   d4,d7
+                add.b   d5,d7
+                move.b  d7,R_SCY(a5)
+                lea     $c700+G(a5),a1          ; SCX = C700[row]
+                move.b  (a1,d5.w),d6
+                move.b  d6,R_SCX(a5)
+                tst.b   rnd.w
+                beq.s   .nd
+                move.b  #LC_ROADLN,(a6)+         ; the GPU reads BG palette 0 itself
+                move.b  d7,(a6)+
+                cmp.b   #69,d4
+                bcc.s   .r0
+                move.b  v_ly.w,(a6)+            ; and renders line 74+n right after
+                st      rl_rend.w
+                bra.s   .r1
+.r0:            clr.b   (a6)+
+.r1:            move.b  d6,(a6)+
+                move.l  d0,(a6)+                ; 8 bytes at d0
+                move.l  d0,rl_pal.w
+.nd:            cmp.b   #69,d4                  ; (BCPS and the FF9A bank are only seen
+                bne.s   .next                   ;  after the last line)
+                move.b  $ff9a+G(a5),d7
+                FBANK
+                move.b  #$88,R_BCPS(a5)
+.next:          addq.b  #1,d4
                 cmp.b   #70,d4
-                bne.s   .line
+                bne     .line
+                bra.s   .end
+.slw:           bsr     rd_slow                 ; interrupts enabled: the generic line
+                bra     .sc
+.sky:           move.b  d4,d7                   ; colour C4[(C47F) + $48 + 2*(n/2)]
+                andi.b  #$fe,d7
+                addi.b  #$48,d7
+                add.b   $c47f+G(a5),d7
+                andi.w  #$ff,d7
+                lea     $c400+G(a5),a0
+                adda.w  d7,a0
+                bsr     rdw_a0
+                move.w  d7,d0
+                bsr     rd_adv
+                move.w  d0,d7
+                bsr     grad3
+                bra.s   .next
+.end:
+                move.b  #2,v_phase.w
+                addi.w  #4*70,div_cnt.w
                 bsr     rh_store
                 bsr     rd_sync
                 move.l  rl_pal.w,d7              ; GB palette RAM: last road palette
@@ -553,14 +983,135 @@ hle_road::
 ; advance the virtual PPU to LY = 73. Lines 0-72 whose only STAT source is HBlank
 ; (the race HUD chain) take a fast path: line marker + native STAT handler.
 rd_wait73::
-.lp:            cmpi.b  #$49,v_ly.w
+                moveq   #$49,d5                 ; (d5 is free before the road loop)
+.lp:            cmp.b   v_ly.w,d5
+                beq.s   .dn
+                move.b  $c1a6+G(a5),d7          ; race HUD chain handler (1BEC-2558)?
+                lsl.w   #8,d7
+                move.b  $c1a5+G(a5),d7
+                cmp.w   #$1bec,d7
+                bcs.s   .nr
+                cmp.w   #$2559,d7
+                bcc.s   .nr
+                bsr     chain_draw
+                cmp.b   v_ly.w,d5
                 beq.s   .dn
                 bsr     chain_nodraw
+                bra.s   .gen
+.nr:            move.b  v_ly.w,-(a7)            ; other native handlers (menus): lines in
+                bsr     fast_to                 ; a batch up to line 73
+                move.b  (a7)+,d7
+                cmp.b   v_ly.w,d7
+                bne.s   .lp
+.gen:           cmp.b   v_ly.w,d5
+                beq.s   .dn
                 bsr     fast_line
                 beq.s   .lp
                 bsr     vadvance_line
                 bra.s   .lp
 .dn:            rts
+
+; drawn frame: race HUD chain lines up to 72 played straight from sc_tab: once the
+; expected handler is checked, one entry per line in sequence (line marker + routine)
+; until the entry that returns with IME off; C1A5 / sc_ptr / IF are written at the end.
+; Anything unexpected at the start: generic path.
+chain_draw::
+                tst.b   rnd.w
+                beq     .no
+                tst.b   hdma_on.w
+                bne     .no
+                tst.b   gb_ime.w
+                beq     .no
+                tst.b   v_inirq.w
+                bne     .no
+                btst    #1,R_IE(a5)
+                beq     .no
+                move.b  R_STAT(a5),d6
+                andi.b  #$78,d6
+                cmp.b   #$08,d6
+                bne     .no
+                cmpi.b  #$c3,$c1a4+G(a5)
+                bne     .no
+                movea.l sc_ptr.w,a0
+                move.b  $c1a6+G(a5),d6
+                lsl.w   #8,d6
+                move.b  $c1a5+G(a5),d6
+                cmp.w   (a0),d6
+                bne     .no                     ; not the expected handler
+                movem.l d0-d3,-(a7)
+                move.l  a0,d2                   ; next entry
+                moveq   #0,d0
+                move.b  v_ly.w,d0               ; line (kept in d0 during the loop)
+                move.l  #LC_LINE<<24,d1
+                move.b  d0,d1                   ; line marker (d1 += 1 per line)
+                moveq   #0,d3                   ; lines done
+.lp:            cmp.b   #$49,d0
+                bcc     .dn
+                move.l  d1,(a6)+
+                addq.l  #1,d1
+                moveq   #7,d6
+                and.b   d0,d6
+                bne.s   .nl
+                PUBLISH d6
+.nl:            tst.b   gb_ime.w
+                beq     .adv                    ; (chain over: IF set at the end)
+                movea.l d2,a1
+                addq.l  #8,d2
+                cmp.l   #sc_end,d2
+                bcs.s   .nw
+                move.l  #sc_tab,d2
+.nw:            move.w  4(a1),d6                ; routine index * 4
+                cmp.w   #4,d6                   ; sc_grad, inlined
+                bne.s   .nsg
+                moveq   #0,d7
+                move.b  6(a1),d7
+                add.b   $c47f+G(a5),d7
+                lea     $c400+G(a5),a0
+                adda.w  d7,a0
+                move.b  1(a0),d6
+                lsl.w   #8,d6
+                move.b  (a0),d6                 ; colour 0 of BG palettes 0-2
+                moveq   #7,d7
+                swap    d7
+                move.w  d6,d7
+                cmp.l   grad_last.w,d7
+                beq.s   .adv
+                move.l  d7,grad_last.w
+                move.b  #LC_GRAD3,(a6)+
+                move.b  #7,(a6)+
+                move.w  d6,(a6)+
+                bra.s   .adv
+.nsg:           cmp.w   #32,d6                  ; sc_none
+                beq.s   .adv
+                lea     sc_rout,a0
+                movea.l (a0,d6.w),a0
+                moveq   #0,d7
+                move.b  6(a1),d7
+                moveq   #0,d6
+                move.b  7(a1),d6
+                move.b  d0,v_ly.w               ; (routines may look at LY / DIV)
+                jsr     (a0)                    ; (the last one leaves IME off)
+.adv:           addq.b  #1,d0
+                addq.w  #1,d3
+                cmpa.l  log_limit.w,a6
+                bcs     .lp
+                bsr     log_slow
+                bra     .lp
+.dn:            move.b  d0,v_ly.w
+                add.w   d3,d3
+                add.w   d3,d3
+                add.w   d3,div_cnt.w
+                move.b  #$92,R_BCPS(a5)         ; (last gradient line)
+                movea.l d2,a0                   ; C1A5 := next entry's handler
+                move.l  a0,sc_ptr.w
+                move.b  1(a0),$c1a5+G(a5)
+                move.b  (a0),$c1a6+G(a5)
+                tst.b   gb_ime.w
+                bne.s   .x2
+                bset    #1,if_pend.w            ; (HBlanks after the chain end, IME off)
+.x2:            move.b  #2,v_phase.w
+                movem.l (a7)+,d0-d3
+.no:            rts
 
 ; undrawn frame: race HUD chain lines up to 72 with only their state effects
 ; (C1A5 chain, IME, BCPS/OCPS, SCX/SCY, OAM DMA): no line marker, no dispatch checks
@@ -867,100 +1418,8 @@ rd8::
                 addq.w  #1,d6
                 rts
 
-; even line (0:38DC): object descriptor C655+n/2
-rd_even::
-                moveq   #0,d7
-                move.b  d4,d7
-                lsr.b   #1,d7
-                lea     $c655+G(a5),a1
-                move.b  (a1,d7.w),d5
-                bmi.s   .new
-                moveq   #0,d7                   ; continuing object: offset d5 in its data
-                move.b  $ff8a+G(a5),d7
-                lea     $c600+G(a5),a1
-                adda.w  d7,a1
-                move.b  (a1)+,d7
-                FBANK
-                moveq   #0,d6
-                move.b  1(a1),d6
-                lsl.w   #8,d6
-                move.b  (a1),d6
-                andi.w  #$ff,d5
-                add.w   d5,d6
-                bsr     rd8
-                move.b  d7,$ff8b+G(a5)
-                bsr     rd8
-                move.b  d7,$ff8c+G(a5)
-                rts
-.new:           move.b  d5,$ff8a+G(a5)
-                moveq   #0,d7
-                move.b  d5,d7
-                lea     $c600+G(a5),a1
-                adda.w  d7,a1
-                move.b  (a1)+,d7
-                FBANK
-                moveq   #0,d6
-                move.b  1(a1),d6
-                lsl.w   #8,d6
-                move.b  (a1),d6
-                bsr     rd8
-                move.b  d7,R_HDMA2(a5)
-                bsr     rd8
-                move.b  d7,R_HDMA1(a5)
-                lsl.w   #8,d7                   ; new DMA source
-                move.b  R_HDMA2(a5),d7
-                andi.w  #$fff0,d7
-                move.w  d7,rh_src.w
-                sf      rh_valid.w
-                bsr     rd8
-                move.b  d7,$ff8b+G(a5)
-                bsr     rd8
-                move.b  d7,$ff8c+G(a5)
-                rts
-
-; odd line (0:3988): OAM buffer entry C000+4*(n/2) from the current object
-rd_odd::
-                move.b  d4,$ff8e+G(a5)
-                moveq   #0,d7
-                move.b  $ff8a+G(a5),d7
-                lea     $c600+G(a5),a1
-                adda.w  d7,a1
-                move.b  (a1),d7
-                FBANK
-                moveq   #0,d6
-                move.b  d4,d6
-                andi.b  #$fe,d6
-                add.w   d6,d6
-                lea     $c000+G(a5),a0
-                adda.w  d6,a0
-                move.b  $ff8b+G(a5),d7
-                add.b   -1(a1),d7
-                move.b  d7,(a0)+
-                move.b  $ff8c+G(a5),d7
-                add.b   -2(a1),d7
-                move.b  d7,(a0)+
-                move.b  $ff8d+G(a5),d7
-                move.b  d7,(a0)+
-                addq.b  #2,d7
-                move.b  d7,$ff8d+G(a5)
-                move.b  -3(a1),(a0)
-                rts
-
-; line part: C6[n] = road row + 1 (0 = sky), cleared
-rd_row::
-                move.b  #$80,R_BCPS(a5)
-                moveq   #0,d7
-                move.b  d4,d7
-                lea     $c600+G(a5),a1
-                adda.w  d7,a1
-                moveq   #0,d5
-                move.b  (a1),d5
-                clr.b   (a1)
-                tst.b   d5
-                beq     .sky
-                subq.b  #1,d5                   ; row
-                tst.b   rnd.w
-                beq     .pp                     ; undrawn: no palette pointer
+; road palette pointer from other tables than the WRAM0 one (d5 = row) -> d0.l 68k address
+rd_ppg::
                 moveq   #0,d6                   ; palette pointer
                 move.b  $ff99+G(a5),d6
                 lsl.w   #8,d6
@@ -969,16 +1428,19 @@ rd_row::
                 bne.s   .vb
                 add.w   d5,d6                   ; word at (FF98) + 2*row
                 add.w   d5,d6
-                cmp.w   #$8000,d6
+                cmp.w   #$4000,d6
+                bcc.s   .ptx
+                move.b  1(a5,d6.w),d0
+                lsl.w   #8,d0
+                move.b  (a5,d6.w),d0
+                bra.s   .cv
+.ptx:           cmp.w   #$8000,d6
                 bcc.s   .pgen
                 lea     (a4,d6.w),a0
-                cmp.w   #$4000,d6
-                bcc.s   .prx
-                lea     (a5,d6.w),a0
 .prx:           move.b  1(a0),d0
                 lsl.w   #8,d0
                 move.b  (a0),d0
-                bra.s   .pp
+                bra.s   .cv
 .pgen:          lea     (a5,d6.w),a0             ; WRAM tables: direct
                 cmp.w   #$c000,d6
                 bcs.s   .pg2
@@ -993,51 +1455,26 @@ rd_row::
                 lsl.w   #8,d7
                 move.b  d2,d7
                 move.w  d7,d0
-                bra.s   .pp
+                bra.s   .cv
 .vb:            move.w  d5,d7                   ; (FF98) + 8*row
                 lsl.w   #3,d7
                 add.w   d7,d6
                 move.w  d6,d0
-.pp:            bsr     rd_adv
-                move.b  #$3e,d7                 ; SCY = row + $3E - n
-                sub.b   d4,d7
-                add.b   d5,d7
-                move.b  d7,R_SCY(a5)
-                lea     $c700+G(a5),a1          ; SCX = C700[row]
-                move.b  (a1,d5.w),d6
-                move.b  d6,R_SCX(a5)
-                tst.b   rnd.w
-                beq.s   .nd
-                move.b  #LC_ROADLN,(a6)+         ; the GPU reads BG palette 0 itself
-                move.b  d7,(a6)+
-                clr.b   (a6)+
-                move.b  d6,(a6)+
-                move.b  $ff9a+G(a5),d7          ; 8 bytes at d0 in bank (FF9A)
-                FBANK
-                lea     (a4,d0.w),a0
-                cmp.w   #$4000,d0
-                bcc.s   .rx
+; d0.w = GB address of the 8 palette bytes -> d0.l = 68k address (bank (FF9A))
+.cv:            cmp.w   #$4000,d0
+                bcc.s   .cvx
                 lea     (a5,d0.w),a0
-.rx:            move.l  a0,(a6)+
-                move.l  a0,rl_pal.w
-                move.b  #$88,R_BCPS(a5)
+                move.l  a0,d0
                 rts
-.nd:            move.b  $ff9a+G(a5),d7          ; undrawn frame: GB state only
-                FBANK
-                move.b  #$88,R_BCPS(a5)
+.cvx:           move.b  $ff9a+G(a5),d7
+                andi.w  #$3f,d7
+                add.w   d7,d7
+                add.w   d7,d7
+                lea     bank_base.w,a0
+                movea.l (a0,d7.w),a0
+                adda.w  d0,a0
+                move.l  a0,d0
                 rts
-.sky:           move.b  d4,d7                   ; colour C4[(C47F) + $48 + 2*(n/2)]
-                andi.b  #$fe,d7
-                addi.b  #$48,d7
-                add.b   $c47f+G(a5),d7
-                andi.w  #$ff,d7
-                lea     $c400+G(a5),a0
-                adda.w  d7,a0
-                bsr     rdw_a0
-                move.w  d7,d0
-                bsr     rd_adv
-                move.w  d0,d7
-                bra     grad3
 
 ; line 73+n is drawn, its HBlank DMA block is copied, LY advances
 rd_adv::
@@ -1047,19 +1484,21 @@ rd_adv::
                 beq.s   .nl
                 move.l  #LC_LINE<<24,d7
                 move.b  v_ly.w,d7
+                tst.b   rl_rend.w               ; (rendered by the last LC_ROADLN)
+                bne.s   .rr
                 move.l  d7,(a6)+
+.rr:            sf      rl_rend.w
                 andi.b  #7,d7
                 bne.s   .nl
                 PUBLISH d7
 .nl:            bsr     rd_hdma16
-                addq.b  #1,v_ly.w
-                move.b  #2,v_phase.w
-                addq.w  #4,div_cnt.w
+                addq.b  #1,v_ly.w               ; (v_phase, DIV: at the end of the road)
                 cmpa.l  log_limit.w,a6
                 bcc     log_slow
                 rts
 rd_slow::
-.slow:          bsr     rd_sync                 ; interrupts may run GB code: real MBC state
+.slow:          sf      rl_rend.w
+                bsr     rd_sync                 ; interrupts may run GB code: real MBC state
                 bsr     rh_store
                 move.b  #$80,d7
                 move.w  #$ff55,d6
