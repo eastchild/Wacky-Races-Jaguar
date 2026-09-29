@@ -1,0 +1,12 @@
+# build products (build.py)
+build/
+gen/
+__pycache__/
+# MAME test runs (test/run.ps1)
+test/out*/
+nvram/
+# never commit ROM images
+*.gbc
+*.gb
+*.j64
+*.rom

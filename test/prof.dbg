@@ -1,0 +1,5 @@
+gtime 30000
+trace D:\source_codes\convert_room\Wacky Races\jaguar\test\trace68k.log,maincpu,noloop
+gtime 200
+trace off,maincpu
+quit
