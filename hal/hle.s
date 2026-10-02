@@ -70,6 +70,8 @@ ob_col::
 pal4::
                 tst.b   rnd.w
                 beq     hle_skip
+; (palette state, not a per-line raster effect: also in undrawn frames)
+pal4_all::
                 st      grad_last.w
                 andi.w  #15,d6
                 move.w  d6,d7
@@ -339,6 +341,8 @@ hle_23_7a00::
 
 ; ---- 6:43E0 (challenge menu loop): B lines: wait HBlank (0:3E58), BCPS := $80, colour 0
 ; of BG palette 0 := word (HL+). Exit: B = 0, HL += 2B, A = last byte, BCPS $82, Z, no carry.
+; After the first line, when nothing else can happen at a line end (no STAT interrupt taken:
+; checked once, nothing changes it in the loop), the HBlanks are inlined as fast_line.
 hle_06_43e0::
                 move.l  d5,-(a7)
                 moveq   #0,d5
@@ -347,16 +351,52 @@ hle_06_43e0::
                 bne.s   .n
                 move.w  #256,d5
 .n:             subq.w  #1,d5
-.lp:            bsr     hal_wait_hbl
-                cmp.w   #$4000,d3               ; colour (HL), HL += 2
+                bsr     hal_wait_hbl
+                cmpi.b  #2,v_phase.w            ; the next lines inline? (d5 bit 31)
+                bne.s   .col
+                move.b  R_STAT(a5),d6
+                andi.b  #$78,d6
+                beq.s   .ok
+                cmp.b   #$08,d6
+                bne.s   .col
+                tst.b   gb_ime.w                ; HBlank interrupt: only pending
+                beq.s   .pd
+                tst.b   v_inirq.w
+                bne.s   .pd
+                btst    #1,R_IE(a5)
+                bne.s   .col
+.pd:            bset    #1,if_pend.w
+.ok:            bset    #31,d5
+                bra.s   .col
+.lp:            tst.l   d5
+                bpl.s   .gen
+                cmpi.b  #143,v_ly.w
+                bcc.s   .gen
+                tst.b   rnd.w
+                beq.s   .na
+                move.l  #LC_LINE<<24,d6
+                move.b  v_ly.w,d6
+                move.l  d6,(a6)+
+                moveq   #7,d7
+                and.b   d6,d7
+                bne.s   .na
+                PUBLISH d7
+.na:            tst.b   hdma_on.w
+                beq.s   .nh
+                bsr     hdma_step
+.nh:            addq.b  #1,v_ly.w
+                addq.w  #4,div_cnt.w
+                bra.s   .col
+.gen:           bsr     hal_wait_hbl
+.col:           cmp.w   #$4000,d3               ; colour (HL), HL += 2
                 bcs.s   .gr
                 cmp.w   #$7ffe,d3
                 bcc.s   .gr
-                move.b  (a4,d3.w),d0            ; (ROMX: direct)
-                move.b  1(a4,d3.w),d7
+                move.b  #LC_BGCOL,(a6)+         ; (ROMX: direct ; always logged, as io_w_bcpd)
+                clr.b   (a6)+
+                move.b  1(a4,d3.w),(a6)+
+                move.b  (a4,d3.w),(a6)+
                 addq.w  #2,d3
-                lsl.w   #8,d7
-                move.b  d0,d7
                 bra.s   .gc
 .gr:            move.w  d3,d6
                 jsr     gb_rd
@@ -365,30 +405,355 @@ hle_06_43e0::
                 move.w  d3,d6
                 jsr     gb_rd
                 addq.w  #1,d3
-                lsl.w   #8,d7
-                move.b  d0,d7
-.gc:
-                st      grad_last.w
-                lea     bgpal_raw.w,a0
-                move.b  d0,(a0)
-                move.w  d7,d6
-                lsr.w   #8,d6
-                move.b  d6,1(a0)
-                move.b  #LC_BGCOL,(a6)+         ; (always logged, as io_w_bcpd)
+                move.b  #LC_BGCOL,(a6)+
                 clr.b   (a6)+
-                move.w  d7,(a6)+
-                cmpa.l  log_limit.w,a6
+                move.b  d7,(a6)+
+                move.b  d0,(a6)+
+.gc:            cmpa.l  log_limit.w,a6
                 bcs.s   .nl
                 bsr     log_slow
 .nl:            dbra    d5,.lp
+                lea     bgpal_raw.w,a0          ; GB palette RAM: the last colour
+                move.b  -1(a6),(a0)
+                move.b  -2(a6),d0               ; A = last byte
+                move.b  d0,1(a0)
+                st      grad_last.w
                 move.b  #$82,R_BCPS(a5)
                 andi.w  #$00ff,d1               ; B = 0
-                lsr.w   #8,d7
-                move.b  d7,d0                   ; A = last byte
                 move.l  (a7)+,d5
                 move    #4,ccr                  ; (dec b: Z ; carry clear since 3E58)
                 rts
 
+; ---- 6:40A8 (challenge menu): wait for STAT mode 1 (VBlank). The GB loop reads STAT until
+; it sees the VBlank: the lines up to 144 advance (inlined when possible, as hal_wait_ly91),
+; then the read in the VBlank advances one more. Exit: A = 1, Z, no carry.
+hle_06_40a8::
+                btst    #7,R_LCDC(a5)
+                beq.s   .off
+.lp:            cmpi.b  #144,v_ly.w
+                bcc.s   .vb
+                bsr     fast_line
+                beq.s   .lp
+                bsr     vadvance_line
+                bra.s   .lp
+.vb:            bsr     vadvance_line
+.off:           moveq   #1,d0
+                move    #4,ccr
+                rts
+
+; ---- 6:4298 / 6:42D2 (challenge menu): 7 rows of 12 map bytes (HL+) at BC (VRAM bank as
+; set: tiles, then attributes + E = 8), one row per line (0:3E58 before each), BC += 32.
+; Exit: D = 0, A = B, BC / HL advanced, Z, no carry.
+hle_06_4298::
+                moveq   #0,d0                   ; (value added)
+                bra.s   hle_maprows
+hle_06_42d2::
+                move.b  #8,d2                   ; ld e,8
+                moveq   #8,d0
+hle_maprows:
+                andi.w  #$00ff,d2
+                ori.w   #$0700,d2               ; D = 7 rows
+.row:           move.b  d0,-(a7)
+                bsr     hal_wait_hbl
+                move.b  (a7)+,d0
+                move.w  d3,d7                   ; source: ROMX / WRAM0 direct, else byte by byte
+                cmp.w   #$4000,d7
+                bcs.s   .sg
+                cmp.w   #$7ff4,d7
+                bcs.s   .sx
+                cmp.w   #$c000,d7
+                bcs.s   .sg
+                cmp.w   #$cff4,d7
+                bcc.s   .sg
+                lea     (a5,d7.w),a0
+                bra.s   .sd
+.sx:            lea     (a4,d7.w),a0
+                bra.s   .sd
+.sg:            lea     hl_buf.w,a1             ; (other areas: via gb_rd)
+                moveq   #12,d6
+                bsr     hl_copy
+                subi.w  #12,d3
+                lea     hl_buf.w,a0
+.sd:            addi.w  #12,d3
+                moveq   #11,d6
+.by:            move.b  (a0)+,d7
+                add.b   d0,d7
+                move.b  d7,(a2,d1.w)            ; (as vram_wr: maps)
+                move.b  vbk_cur.w,(a6)+
+                move.b  d7,(a6)+
+                move.w  d1,(a6)+
+                addq.b  #1,d1                   ; (inc c)
+                dbra    d6,.by
+                subq.b  #1,d1
+                addi.w  #$15,d1                 ; (BC = (C + 11) + $15 with the carry)
+                cmpa.l  log_limit.w,a6
+                bcs.s   .nl
+                bsr     log_slow
+.nl:            subi.w  #$0100,d2
+                cmp.w   #$0100,d2
+                bcc.s   .row
+                move.w  d1,d0
+                lsr.w   #8,d0                   ; A = B
+                move    #4,ccr
+                rts
+; ---- 35:61C0 (menus): BG palettes 1-7 := the 56 bytes at word (FF8F) + 9, one palette per
+; line (waits for the HBlank as 0:3E58 before each). Exit: A = last byte, C = $69, DE = $0009,
+; HL after the data, BCPS = $80, Z, no carry.
+hle_35_61c0::
+                move.b  #$69,d1
+                move.b  $ff90+G(a5),d3
+                lsl.w   #8,d3
+                move.b  $ff8f+G(a5),d3
+                addi.w  #9,d3
+                move.w  #$0709,d2
+.lp:            bsr     hal_wait_hbl
+                lea     hl_buf.w,a1
+                moveq   #8,d6
+                bsr     hl_copy
+                lea     hl_buf.w,a0
+                move.w  d2,d6
+                lsr.w   #8,d6
+                neg.b   d6
+                addq.b  #8,d6                   ; palette 8 - D
+                bsr     pal4_all
+                subi.w  #$0100,d2
+                cmp.w   #$0100,d2
+                bcc.s   .lp
+                move.b  hl_buf+7.w,d0
+                move.b  #$80,R_BCPS(a5)
+                move    #4,ccr
+                rts
+; ---- 35:61E9 (menus): OBJ palettes 0-6 := colour 0 black, colours 1-3 from the 42 bytes at
+; HL. Exit: A = last byte, C = $6b, D = 0, HL after the data, OCPS = $b8, Z, no carry.
+hle_35_61e9::
+                move.b  #$6b,d1
+                andi.w  #$00ff,d2
+                ori.w   #$0700,d2
+.lp:            lea     hl_buf.w,a1
+                clr.w   (a1)+
+                moveq   #6,d6
+                bsr     hl_copy
+                move.w  d2,d6
+                lsr.w   #8,d6
+                neg.b   d6
+                add.b   #15,d6                  ; OBJ palette 7 - D
+                move.w  d6,d7
+                andi.w  #7,d7
+                lsl.w   #3,d7
+                lea     obpal_raw.w,a0          ; (the GPU has it already: nothing to send)
+                adda.w  d7,a0
+                move.l  hl_buf.w,d7
+                cmp.l   (a0)+,d7
+                bne.s   .snd
+                move.l  hl_buf+4.w,d7
+                cmp.l   (a0),d7
+                beq.s   .n
+.snd:           lea     hl_buf.w,a0
+                bsr     pal4_all
+.n:             subi.w  #$0100,d2
+                cmp.w   #$0100,d2
+                bcc.s   .lp
+                move.b  hl_buf+7.w,d0
+                move.b  #$b8,R_OCPS(a5)
+                move    #4,ccr
+                rts
+; copy d6.w bytes from the GB address HL (d3, advanced) to a1 (advanced)
+hl_copy:
+                move.w  d3,d7
+                add.w   d6,d7
+                subq.w  #1,d7                   ; (last byte)
+                eor.w   d3,d7
+                andi.w  #$f000,d7
+                bne.s   .slow                   ; (crosses a 4 KB area)
+                move.w  d3,d7
+                cmp.w   #$4000,d7
+                bcs.s   .f
+                cmp.w   #$8000,d7
+                bcs.s   .rx
+                cmp.w   #$c000,d7
+                bcs.s   .slow
+                cmp.w   #$d000,d7
+                bcc.s   .slow
+.f:             lea     (a5,d7.w),a0
+                bra.s   .c
+.rx:            lea     (a4,d7.w),a0
+.c:             add.w   d6,d3
+                subq.w  #1,d6
+.cl:            move.b  (a0)+,(a1)+
+                dbra    d6,.cl
+                rts
+.slow:          move.w  d6,-(a7)
+.sl:            move.w  d3,d6
+                jsr     gb_rd
+                move.b  d7,(a1)+
+                addq.w  #1,d3
+                subq.w  #1,(a7)
+                bne.s   .sl
+                addq.l  #2,a7
+                rts
+
+; ---- sound engine (banks 20 / 21: "GHX Sound Engine", Martin Wodok 1999) ------------------
+; On the GB a sound effect takes the channels it needs from the music (it overwrites their
+; state in the engine RAM and the music skips its notes there until the effect is over).
+; Here the engine runs as two instances: the music (the engine RAM in place, DSP channels
+; 1-4) and the effects (its own copy of the engine RAM at SDRV, swapped in while it runs, and
+; its own sound registers: DSP channels 5-8, mixed with the music). The effects instance has
+; its sequencer off (C30D bit 7) and no music.
+; exchange the engine RAM (C200-C2AF, C300-C33F) with the other instance's ; uses d6/d7/a0/a1
+snd_swap:
+                lea     $c200+G(a5),a0
+                lea     SDRV,a1
+                moveq   #($b0/4)-1,d7
+.l1:            move.l  (a0),d6
+                move.l  (a1),(a0)+
+                move.l  d6,(a1)+
+                dbra    d7,.l1
+                lea     $c300+G(a5),a0
+                moveq   #($40/4)-1,d7
+.l2:            move.l  (a0),d6
+                move.l  (a1),(a0)+
+                move.l  d6,(a1)+
+                dbra    d7,.l2
+                not.b   snd_inst.w
+                rts
+; run the GB engine routine a0.w in the effects instance, the GB registers kept
+snd_inb:
+                movem.l d0-d3,snd_save.w
+                move.w  a0,-(a7)
+                bsr     snd_swap
+                move.b  #$80,$c30d+G(a5)        ; (no music in this instance)
+                movea.w (a7)+,a0
+                jsr     call_gb
+                bsr.s   snd_act
+                bsr     snd_swap
+                movem.l snd_save.w,d0-d3
+                rts
+; (effects instance in place) channels in use by an effect (C203, C22F, C25B, C287 != 0);
+; an effect that is over keeps sounding (its instrument goes on) until the music plays a
+; note on that channel (snd_take) ; uses d0-d1
+snd_act:
+                moveq   #0,d0
+                tst.b   $c203+G(a5)
+                beq.s   .c2
+                bset    #0,d0
+.c2:            tst.b   $c22f+G(a5)
+                beq.s   .c3
+                bset    #1,d0
+.c3:            tst.b   $c25b+G(a5)
+                beq.s   .c4
+                bset    #2,d0
+.c4:            tst.b   $c287+G(a5)
+                beq.s   .cx
+                bset    #3,d0
+.cx:            move.b  snds_act.w,d1
+                move.b  d0,snds_act.w
+                or.b    snds_tail.w,d1          ; tail: over (or already in tail), not in use
+                not.b   d0
+                and.b   d0,d1
+                move.b  d1,snds_tail.w
+                ; a tail needs the engine update while its instrument program goes on (steps
+                ; left: C214 + $2c * channel, or a vibrato: C209) ; (the wave channel: always)
+                moveq   #0,d0
+                btst    #0,d1
+                beq.s   .t2
+                move.b  $c214+G(a5),d0
+                or.b    $c209+G(a5),d0
+.t2:            btst    #1,d1
+                beq.s   .t3
+                or.b    $c240+G(a5),d0
+                or.b    $c235+G(a5),d0
+.t3:            btst    #2,d1
+                beq.s   .t4
+                st      d0
+.t4:            btst    #3,d1
+                beq.s   .t5
+                or.b    $c298+G(a5),d0
+                or.b    $c28d+G(a5),d0
+.t5:            or.b    snds_act.w,d0
+                sne     snds_on.w               ; (something to update)
+                tst.b   $c336+G(a5)             ; (a pending looping effect)
+                beq.s   .ox
+                st      snds_on.w
+.ox:            rts
+; (from io_w_snd, music instance, d6.w = register, d7 = value: both kept) a note triggered by
+; the music on a channel where the tail of an effect sounds: that sound stops (its DAC off,
+; its instrument program ended in the effects instance's RAM)
+snd_take:
+                move.b  d7,-(a7)
+                btst    #7,d7
+                beq.s   .tx                      ; (not a trigger)
+                moveq   #0,d7
+                cmp.w   #$ff14,d6
+                beq.s   .t
+                moveq   #1,d7
+                cmp.w   #$ff19,d6
+                beq.s   .t
+                moveq   #2,d7
+                cmp.w   #$ff1e,d6
+                beq.s   .t
+                moveq   #3,d7
+                cmp.w   #$ff23,d6
+                bne.s   .tx
+.t:             bclr    d7,snds_tail.w
+                beq.s   .tx                      ; (no tail there)
+                movem.l d6/a1,-(a7)
+                lea     snd_off(pc),a0
+                move.w  d7,d6
+                add.w   d6,d6
+                move.w  (a0,d6.w),d6            ; its NRx2 / NR30
+                lea     SDRV+$14,a1             ; C214 + $2c * channel: instrument steps left
+                mulu    #$2c,d7
+                clr.b   (a1,d7.w)
+                moveq   #0,d7
+                st      snd_inst.w              ; (the effects instance's register)
+                bsr     io_w_snd
+                sf      snd_inst.w
+                movem.l (a7)+,d6/a1
+.tx:            move.b  (a7)+,d7
+                rts
+snd_off:        dc.w    $ff12,$ff17,$ff1a,$ff21
+; 4000: play music A (the music instance; the effects instance's engine on)
+snd_play::
+                movea.w #$4102,a0
+                jsr     call_gb
+                move.b  #$ff,SDRV+$b0.w
+                rts
+; 4003: once per frame: the music, then the effects when there are some
+snd_update::
+                movea.w #$426c,a0
+                jsr     call_gb
+                tst.b   snds_on.w
+                beq.s   .ux
+                movea.w #$426c,a0
+                bra     snd_inb
+.ux:             rts
+; 4015: sound effect A: the effects instance only
+snd_fx::
+                st      snds_on.w
+                bsr     snd_swap
+                move.b  #$80,$c30d+G(a5)
+                movea.w #$4de1,a0
+                jsr     call_gb
+                movem.l d0-d1,-(a7)
+                bsr     snd_act
+                movem.l (a7)+,d0-d1
+                st      snds_on.w               ; (updated from the next frame on)
+                bra     snd_swap
+; 4006 (stop), 4009 (sound on, restart the looping effect), 4018 (off): both instances
+snd_both6::
+                movea.w #$4248,a0
+                bra.s   snd_both
+snd_both9::
+                movea.w #$4225,a0
+                bra.s   snd_both
+snd_both18::
+                movea.w #$4265,a0
+snd_both:
+                move.w  a0,-(a7)
+                jsr     call_gb
+                movea.w (a7)+,a0
+                st      snds_on.w
+                bra     snd_inb
 ; ---- 0:1A73 results screen gradient: colour 0 of BG palettes 0-3 and 6 ---------
 hle_1a73::
                 moveq   #0,d7
@@ -736,7 +1101,13 @@ hle_road::
                 move.l  a0,rl_tbl.w
 .nt:            move.b  cur_bank.w,d3
                 bsr     rh_load
-                moveq   #0,d4                   ; n (word: index)
+                tst.b   gb_ime.w                ; no GB interrupt in between, palette pointers
+                bne.s   .gen                    ; from the WRAM0 table: the fast loop
+                tst.b   rnd.w
+                beq     road_fast
+                tst.l   rl_tbl.w
+                bne     road_fast
+.gen:           moveq   #0,d4                   ; n (word: index)
 .line:          btst    #0,d4
                 bne     .odd
                 ; ---- even line (0:38DC): object descriptor C655+n/2
@@ -874,19 +1245,7 @@ hle_road::
 .v:             movea.l rh_ptr.w,a0
                 move.w  rh_dst.w,d6
                 lea     (a2,d6.w),a1
-                move.l  (a0),d1                 ; an unchanged block is not copied
-                cmp.l   (a1),d1
-                bne.s   .cp
-                move.l  4(a0),d1
-                cmp.l   4(a1),d1
-                bne.s   .cp
-                move.l  8(a0),d1
-                cmp.l   8(a1),d1
-                bne.s   .cp
-                move.l  12(a0),d1
-                cmp.l   12(a1),d1
-                beq.s   .ha
-.cp:            move.b  #LC_BLOCK,(a6)+
+                move.b  #LC_BLOCK,(a6)+         ; (the GPU skips what does not change)
                 move.b  vbk_cur.w,(a6)+
                 move.w  d6,(a6)+
                 moveq   #16,d1
@@ -926,15 +1285,15 @@ hle_road::
                 move.b  d6,R_SCX(a5)
                 tst.b   rnd.w
                 beq.s   .nd
-                move.b  #LC_ROADLN,(a6)+         ; the GPU reads BG palette 0 itself
-                move.b  d7,(a6)+
-                cmp.b   #69,d4
+                cmp.b   #69,d4                  ; the GPU reads BG palette 0 itself
                 bcc.s   .r0
-                move.b  v_ly.w,(a6)+            ; and renders line 74+n right after
+                move.b  #LC_ROADLN|LF_LINE,(a6)+ ; and renders line 74+n right after
                 st      rl_rend.w
                 bra.s   .r1
-.r0:            clr.b   (a6)+
-.r1:            move.b  d6,(a6)+
+.r0:            move.b  #LC_ROADLN,(a6)+
+.r1:            move.b  d7,(a6)+
+                move.b  d6,(a6)+
+                clr.b   (a6)+
                 move.l  d0,(a6)+                ; 8 bytes at d0
                 move.l  d0,rl_pal.w
 .nd:            cmp.b   #69,d4                  ; (BCPS and the FF9A bank are only seen
@@ -945,7 +1304,7 @@ hle_road::
 .next:          addq.b  #1,d4
                 cmp.b   #70,d4
                 bne     .line
-                bra.s   .end
+                bra     .end
 .slw:           bsr     rd_slow                 ; interrupts enabled: the generic line
                 bra     .sc
 .sky:           move.b  d4,d7                   ; colour C4[(C47F) + $48 + 2*(n/2)]
@@ -962,7 +1321,7 @@ hle_road::
                 bsr     grad3
                 bra.s   .next
 .end:
-                move.b  #2,v_phase.w
+road_end:       move.b  #2,v_phase.w
                 addi.w  #4*70,div_cnt.w
                 bsr     rh_store
                 bsr     rd_sync
@@ -980,6 +1339,245 @@ hle_road::
                 movem.l (a7)+,d0-d5/a1
                 rts
 
+; ---------------------------------------------------------------------------
+; Fast loop of 0:32AE: used when no GB interrupt can run in between (IME off) and, in a
+; drawn frame, the palette pointers come from the WRAM0 table. Nothing but the final state
+; has to match the GB code line by line, so:
+; - the GPU gets one command per line (scroll + palette address, or sky colour) that also
+;   renders the line;
+; - the HBlank DMA blocks (16 bytes of object tiles per line) are sent once per object, as
+;   a block that the GPU reads from the ROM itself;
+; - the ROM bank is only switched at the end (bank (FF9A), as the GB code leaves it).
+; d4 = $c600 + n, d3 = address of the next object descriptor, d2 = $3e - n, d1 = DMA blocks
+; of the current run, a1 = C600 + object, a2 = OAM buffer entry, a3 = object data
+; ---------------------------------------------------------------------------
+road_fast:
+                move.l  a2,rd_a2.w
+                move.l  a3,rd_a3.w
+                tst.b   rnd.w
+                beq.s   .nm
+                move.l  #(LC_LINE<<24)|73,(a6)+ ; line 73: drawn before the first change
+.nm:            lea     $c000+G(a5),a2
+                move.w  #$c600,d4
+                move.w  #$c655,d3
+                moveq   #$3e,d2
+                moveq   #0,d1
+                bsr     rd_obj                  ; the object going on from the last frame
+.line:          btst    #0,d4
+                bne.s   .odd
+                ; ---- even line: object descriptor C655+n/2
+                addq.w  #1,d3
+                moveq   #0,d5
+                move.b  -1(a5,d3.w),d5
+                bmi.s   .new
+                move.b  (a3,d5.w),$ff8b+G(a5)   ; same object: y, x at this offset of its data
+                move.b  1(a3,d5.w),$ff8c+G(a5)
+                bra.s   .row
+.new:           bsr     rd_flush                ; (the blocks of the object before)
+                move.b  d5,$ff8a+G(a5)
+                bsr     rd_obj
+                move.b  (a3),R_HDMA2(a5)        ; its data: DMA source, y, x
+                move.b  1(a3),d7
+                move.b  d7,R_HDMA1(a5)
+                lsl.w   #8,d7
+                move.b  (a3),d7
+                andi.w  #$fff0,d7
+                move.w  d7,rh_src.w
+                move.b  2(a3),$ff8b+G(a5)
+                move.b  3(a3),$ff8c+G(a5)
+                bra.s   .row
+                ; ---- odd line: OAM buffer entry C000+4*(n/2) from the current object
+.odd:           move.b  $ff8b+G(a5),d7
+                add.b   -1(a1),d7
+                move.b  d7,(a2)+
+                move.b  $ff8c+G(a5),d7
+                add.b   -2(a1),d7
+                move.b  d7,(a2)+
+                move.b  $ff8d+G(a5),(a2)+
+                addq.b  #2,$ff8d+G(a5)
+                move.b  -3(a1),(a2)+
+                ; ---- line part: C6[n] = road row + 1 (0 = sky), cleared
+.row:           moveq   #0,d5
+                move.b  (a5,d4.w),d5
+                beq     .sky
+                clr.b   (a5,d4.w)
+                subq.b  #1,d5                   ; row
+                move.b  d2,d7
+                add.b   d5,d7                   ; SCY = row + $3E - n
+                move.b  d7,R_SCY(a5)
+                lea     $c700+G(a5),a0
+                move.b  (a0,d5.w),d6            ; SCX = C700[row]
+                move.b  d6,R_SCX(a5)
+                tst.b   rnd.w
+                beq.s   .next
+                move.b  #LC_ROADLN|LF_LINE,(a6)+ ; line 74+n with them and BG palette 0
+                move.b  d7,(a6)+
+                move.b  d6,(a6)+
+                clr.b   (a6)+
+                movea.l rl_tbl.w,a0             ; GB address of the 8 palette bytes
+                add.w   d5,d5
+                move.b  1(a0,d5.w),d0
+                lsl.w   #8,d0
+                move.b  (a0,d5.w),d0
+                cmp.w   #$4000,d0
+                bcc.s   .ph
+                lea     (a5,d0.w),a0
+                bra.s   .pa
+.ph:            movea.l rl_pbase.w,a0
+                adda.w  d0,a0
+.pa:            move.l  a0,(a6)+
+                move.l  a0,rl_pal.w
+                sf      rl_rend.w               ; (the last command is a road row)
+.next:          addq.w  #1,d1                   ; one more DMA block
+                subq.b  #1,d2
+                addq.w  #1,d4
+                moveq   #15,d7
+                and.b   d4,d7
+                bne.s   .nx2
+                PUBLISH d7                      ; every 16 lines
+                cmpa.l  log_limit.w,a6
+                bcs.s   .nx2
+                bsr     log_slow
+.nx2:           cmp.b   #70,d4
+                bne     .line
+                bra     .end
+.sky:           move.b  #$92,R_BCPS(a5)         ; sky: colour C4[(C47F) + $48 + 2*(n/2)]
+                tst.b   rnd.w
+                beq     .next
+                move.b  d4,d7
+                andi.b  #$fe,d7
+                addi.b  #$48,d7
+                add.b   $c47f+G(a5),d7
+                andi.w  #$ff,d7
+                lea     $c400+G(a5),a0
+                move.b  1(a0,d7.w),d0
+                lsl.w   #8,d0
+                move.b  (a0,d7.w),d0
+                move.l  #((LC_GRAD3|LF_LINE)<<24)|$70000,d7
+                move.w  d0,d7
+                move.l  d7,d6
+                andi.l  #$00ffffff,d6
+                cmp.l   grad_last.w,d6
+                beq.s   .sk1
+                move.l  d6,grad_last.w
+                move.l  d7,(a6)+
+                bra.s   .sk2
+.sk1:           move.l  #(LC_NOP|LF_LINE)<<24,(a6)+
+.sk2:           st      rl_rend.w               ; (the last command is a sky line)
+                bra     .next
+.end:           tst.b   rnd.w
+                beq.s   .e1
+                lea     -8(a6),a0               ; line 143 is not rendered from here
+                tst.b   rl_rend.w
+                beq.s   .e0
+                addq.l  #4,a0
+.e0:            bclr    #7,(a0)
+.e1:            sf      rl_rend.w
+                bsr     rd_flush
+                move.b  #69,$ff8e+G(a5)
+                movea.l rd_a2.w,a2
+                movea.l rd_a3.w,a3
+                addi.b  #70,v_ly.w
+                move.b  $ff9a+G(a5),d7
+                FBANK
+                move.b  #$88,R_BCPS(a5)
+                bra     road_end
+
+; current object (FF8A): a1 := its entry in C6xx, a4 := its ROM bank, a3 := its data
+rd_obj:
+                moveq   #0,d7
+                move.b  $ff8a+G(a5),d7
+                lea     $c600+G(a5),a1
+                adda.w  d7,a1
+                move.b  (a1),d7
+                andi.w  #$3f,d7
+                add.w   d7,d7
+                add.w   d7,d7
+                lea     bank_base.w,a0
+                movea.l (a0,d7.w),a4
+                move.b  2(a1),d7
+                lsl.w   #8,d7
+                move.b  1(a1),d7
+                bsr.s   rd_ptr
+                movea.l a0,a3
+                rts
+; a0 := 68k address of the GB address d7.w (ROMX: bank a4 ; VRAM / WRAMX: the bases saved
+; in rd_a2 / rd_a3)
+rd_ptr:
+                cmp.w   #$4000,d7
+                bcs.s   .f
+                cmp.w   #$8000,d7
+                bcs.s   .xx
+                cmp.w   #$a000,d7
+                bcs.s   .v
+                cmp.w   #$d000,d7
+                bcs.s   .f
+                cmp.w   #$e000,d7
+                bcs.s   .wt
+.f:             lea     (a5,d7.w),a0
+                rts
+.xx:            lea     (a4,d7.w),a0
+                rts
+.v:             movea.l rd_a2.w,a0
+                adda.w  d7,a0
+                rts
+.wt:            movea.l rd_a3.w,a0
+                adda.w  d7,a0
+                rts
+; the d1 HBlank DMA blocks done since the last call: rh_src -> rh_dst (VRAM bank vbk_cur),
+; counters advanced, d1 := 0. From the ROM: one command, the GPU reads the data.
+rd_flush:
+                tst.w   d1
+                beq     .r
+                tst.b   strm.w
+                beq.s   .adv                    ; (tiles not needed by the next frame)
+                move.w  rh_src.w,d7
+                cmp.w   #$8000,d7
+                bcc.s   .ram
+                bsr     rd_ptr
+                move.w  d1,d7
+                subq.w  #1,d7
+                add.w   d7,d7
+                or.b    vbk_cur.w,d7
+                move.b  #LC_BLKP,(a6)+
+                move.b  d7,(a6)+
+                move.w  rh_dst.w,(a6)+
+                move.l  a0,(a6)+
+                bra.s   .adv
+.ram:           movem.l d1-d2,-(a7)             ; from RAM: the data itself, block by block
+                move.w  rh_dst.w,d2
+                subq.w  #1,d1
+.rb:            bsr     rd_ptr
+                movea.l rd_a2.w,a1
+                adda.w  d2,a1
+                move.b  #LC_BLOCK,(a6)+
+                move.b  vbk_cur.w,(a6)+
+                move.w  d2,(a6)+
+                moveq   #16,d6
+                move.l  d6,(a6)+
+                moveq   #3,d6
+.rc:            move.l  (a0),(a1)+
+                move.l  (a0)+,(a6)+
+                dbra    d6,.rc
+                cmpa.l  log_limit.w,a6
+                bcs.s   .rn
+                bsr     log_slow
+.rn:            addi.w  #16,d7
+                addi.w  #16,d2
+                andi.w  #$1ff0,d2
+                ori.w   #$8000,d2
+                dbra    d1,.rb
+                movem.l (a7)+,d1-d2
+.adv:           move.w  d1,d7
+                lsl.w   #4,d7
+                add.w   d7,rh_src.w
+                add.w   rh_dst.w,d7
+                andi.w  #$1ff0,d7
+                ori.w   #$8000,d7
+                move.w  d7,rh_dst.w
+                moveq   #0,d1
+.r:             rts
+
 ; advance the virtual PPU to LY = 73. Lines 0-72 whose only STAT source is HBlank
 ; (the race HUD chain) take a fast path: line marker + native STAT handler.
 rd_wait73::
@@ -993,6 +1591,9 @@ rd_wait73::
                 bcs.s   .nr
                 cmp.w   #$2559,d7
                 bcc.s   .nr
+                bsr     chain_fast
+                cmp.b   v_ly.w,d5
+                beq.s   .dn
                 bsr     chain_draw
                 cmp.b   v_ly.w,d5
                 beq.s   .dn
@@ -1010,6 +1611,63 @@ rd_wait73::
                 bsr     vadvance_line
                 bra.s   .lp
 .dn:            rts
+
+; drawn frame, the whole race HUD chain from line 0 (the normal case): lines 0-72 by the
+; straight code generated by statchain68.py (sc_fastbody), one command per line for the
+; GPU, then the state the chain leaves. Anything else: chain_draw.
+chain_fast::
+                tst.b   rnd.w
+                beq     .no
+                tst.b   v_ly.w
+                bne     .no
+                tst.b   hdma_on.w
+                bne     .no
+                tst.b   gb_ime.w
+                beq     .no
+                tst.b   v_inirq.w
+                bne     .no
+                btst    #1,R_IE(a5)
+                beq     .no
+                move.b  R_STAT(a5),d6
+                andi.b  #$78,d6
+                cmp.b   #$08,d6
+                bne     .no
+                cmpi.b  #$c3,$c1a4+G(a5)
+                bne     .no
+                cmpi.b  #$1e,$c1a5+G(a5)        ; next handler: 1C1E (1BEC was taken at EI)
+                bne     .no
+                cmpi.b  #$1c,$c1a6+G(a5)
+                bne     .no
+                cmpi.b  #$b9,$c47f+G(a5)        ; (the gradient colours do not wrap in C4xx)
+                bcc     .no
+                movem.l d3-d5,-(a7)
+                move.w  #$c400,d4
+                moveq   #0,d6
+                move.b  $c47f+G(a5),d6
+                add.w   d6,d4                   ; gradient colours at (a5,d4.w)
+                move.l  grad_last.w,d5          ; last gradient sent, as its command
+                ori.l   #(LC_GRAD3|LF_LINE)<<24,d5
+                move.l  #((LC_GRAD3|LF_LINE)<<24)|$70000,d3
+                cmpa.l  log_limit.w,a6
+                bcs.s   .go
+                bsr     log_slow
+.go:            bsr     sc_fastbody
+                move.l  d5,d6
+                rol.l   #8,d6
+                cmp.b   #LC_GRAD3|LF_LINE,d6
+                bne.s   .ng
+                andi.l  #$00ffffff,d5
+                move.l  d5,grad_last.w
+.ng:            movem.l (a7)+,d3-d5
+                move.b  #73,v_ly.w
+                addi.w  #4*73,div_cnt.w
+                move.b  #$92,R_BCPS(a5)         ; (last gradient line)
+                move.l  #sc_tab,sc_ptr.w        ; next handler 1BEC
+                move.b  #$ec,$c1a5+G(a5)
+                move.b  #$1b,$c1a6+G(a5)
+                bset    #1,if_pend.w            ; (HBlanks after the chain end, IME off)
+                move.b  #2,v_phase.w
+.no:            rts
 
 ; drawn frame: race HUD chain lines up to 72 played straight from sc_tab: once the
 ; expected handler is checked, one entry per line in sequence (line marker + routine)
@@ -1506,8 +2164,7 @@ rd_slow::
                 bsr     vadvance_line
                 bra     rh_load
 
-; one 16-byte HDMA block rh_src -> rh_dst (VRAM bank 1), counters advanced;
-; an unchanged block (streamed images repeat) is not copied
+; one 16-byte HDMA block rh_src -> rh_dst (VRAM bank 1), counters advanced
 rd_hdma16::
                 tst.b   strm.w
                 beq     .skp                     ; tiles not needed by the next frame
@@ -1520,19 +2177,7 @@ rd_hdma16::
 .v:             movea.l rh_ptr.w,a0
                 move.w  rh_dst.w,d6
                 lea     (a2,d6.w),a1
-                move.l  (a0),d1
-                cmp.l   (a1),d1
-                bne.s   .cp
-                move.l  4(a0),d1
-                cmp.l   4(a1),d1
-                bne.s   .cp
-                move.l  8(a0),d1
-                cmp.l   8(a1),d1
-                bne.s   .cp
-                move.l  12(a0),d1
-                cmp.l   12(a1),d1
-                beq.s   .adv
-.cp:            move.b  #LC_BLOCK,(a6)+
+                move.b  #LC_BLOCK,(a6)+
                 move.b  vbk_cur.w,(a6)+
                 move.w  d6,(a6)+
                 moveq   #16,d1

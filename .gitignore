@@ -6,6 +6,7 @@ __pycache__/
 # they contain game data)
 test/out*/
 test/cmp/
+test/gold/
 test/gbout/
 # audio captures (game music)
 *.wav

@@ -1,7 +1,7 @@
-﻿"""SM83 (GBC) -> MC68000 (Atari Jaguar) static recompiler for Wacky Races.
+"""SM83 (GBC) -> MC68000 (Atari Jaguar) static recompiler for Wacky Races.
 
-Input : analysis/disasm_jag/analysis.pkl (recursive disassembly of the ORIGINAL rom, made by
-        analysis/gbre.py with GBDIS_RAW=1 GBRE_OUT=analysis/disasm_jag) + dynamic coverage.
+Input : build/analysis/analysis.pkl (recursive disassembly of the original ROM, made by
+        analysis/gbre.py: build.py runs it) + the dynamic coverage (analysis/coverage).
 Output: gen/bank_BB.s (translated code, labels g_BB_AAAA), gen/tables.s (GB address -> code),
         gen/report.txt, gen/labels.txt
 
@@ -20,7 +20,7 @@ import os, sys, pickle, collections, re
 os.environ['GBDIS_RAW'] = '1'
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
-AN = os.path.join(ROOT, 'analysis')
+AN = os.path.join(HERE, 'analysis')            # tools and coverage (analysis/), gbre output: build/analysis
 sys.path.insert(0, AN)
 from gbdis import ROM
 import annot68 as annot
@@ -82,7 +82,7 @@ def load_cov(dirs):
 
 class Recomp:
     def __init__(self):
-        an = pickle.load(open(os.path.join(AN, 'disasm_jag', 'analysis.pkl'), 'rb'))
+        an = pickle.load(open(os.path.join(HERE, 'build', 'analysis', 'analysis.pkl'), 'rb'))
         self.code = an['code']
         self.ctx = an['ctx']
         self.acc, self.bankat, self.dyn, self.dynk = load_cov([os.path.join(AN, d) for d in annot.COVDIRS])

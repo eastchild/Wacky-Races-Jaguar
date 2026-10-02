@@ -22,29 +22,56 @@ The whole game runs from the original Game Boy Color ROM.
   game relies on (memory banking, LCD timing, interrupts, DMA, joypad). The hottest raster
   effects (sky gradients, the race HUD, the road) are rewritten natively in 68000 code.
 - **GPU renderer** (`hal/gpu.s`): the 68000 logs every video change, and the Jaguar's GPU (Tom)
-  replays that log and draws the Game Boy Color picture line by line. The Object Processor
-  then shows it scaled ×1.5.
-- **Sound** (`hal/dsp.s`): the Game Boy sound chip is emulated on the Jaguar's DSP (Jerry).
+  replays that log and draws the Game Boy Color picture line by line, straight into the
+  framebuffer. Tom also does the preparation work: tile data converted (and mirrored) when it
+  changes, tilemaps decoded, palettes turned into pixel-pair tables, tile data streamed from the
+  ROM. Three framebuffers: Tom never draws into the one on screen. The Object Processor then
+  shows the picture over the whole height of the screen, in high resolution.
+- **Sound** (`hal/dsp.s`): the Game Boy sound chip is emulated on the Jaguar's DSP (Jerry),
+  twice: the game's sound engine runs once for the music and once for the sound effects, each
+  with its own four channels, mixed together. A sound effect no longer cuts a music channel.
 
 ### Status
 
 The game boots and all the screens tested so far work: logos, intro, menus, racer and
 challenge selection, races with items, results, the Arcade, Endurance, Championship and Time
-Trial modes. Testing is mostly done in MAME (headless, scripted) and in BigPEmu.
+Trial modes. The game runs at full speed and full frame rate (60 frames per second on an NTSC
+machine) on all the screens measured: intro, menus, racer and challenge selection, races.
+Testing is mostly done in MAME (headless, scripted, with picture-by-picture regression checks)
+and in BigPEmu. PAL machines have not been tested yet.
+
+### Controls and display
+
+Jaguar **B** or **C** = Game Boy A, **A** = Game Boy B, **Option** = Select, **Pause** = Start.
+
+The picture fills the whole height of the screen, in the Jaguar's high-resolution mode
+(pixels two clocks wide: about 704 pixels per line in NTSC, 690 in PAL; NTSC ×1.63 = 234
+lines, PAL ×1.97 = 283 lines, all 144 lines of the Game Boy picture visible). Keypad **\***
+switches between the original 10:9 picture and a picture stretched to the full width. Keypad
+**#** switches between the whole height (overscan) and the safe area of a CRT TV.
 
 ### Building
 
-Requirements: JagStudio (for `rmac` and `rln`),
-Python 3.12, and optionally MAME and PyBoy for the automated tests.
+Requirements:
+- Python 3 (no extra package needed for the build),
+- JagStudio, for `rmac`, `rln`, `include/JAGUAR.INC` and `include/Univ.bin`: set `JAGSTUDIO` to
+  its `buildfiles` directory (default `D:\source_codes\jagstudio\buildfiles`),
+- the original ROM, *Wacky Races (Europe) (En,Fr,De,Es,It,Nl).gbc* (SHA-1
+  `dba18064c886cebe4c4be80f941622f377adab98`), in this directory or its parent (or `WACKY_GBROM`).
 
 ```
-python build.py            # recompile the game and build build/wacky.j64
+python build.py            # analyse + recompile the game, build build/wacky.j64
 python build.py --norecomp # rebuild only the Jaguar side (HAL, GPU, DSP)
+python build.py --analyze  # analyse the GB ROM again (analysis/gbre.py)
 python build.py --hud      # debug build: game fps and drawn fps on screen
+python build.py --sync     # test build for test/sync.ps1 (every frame drawn, deterministic)
 ```
 
-The build currently expects the disassembly and execution traces (`../analysis`) and the
-original ROM in the parent directory. Those are not part of this repository yet.
+The ROM is copied to `../output` (or `WACKY_OUTPUT`) as `Wacky Races (Jaguar).j64`
+(`--hud`: `Wacky Races (Jaguar) [debug HUD].j64`; the test builds stay in `build/`). `analysis/` holds the tools that
+disassemble the GB ROM (`gbre.py`, seeded with the merged execution traces of
+`analysis/coverage` and the table entries of `extra_entries.txt`: addresses only, no game data).
+The automated tests in `test/` also need MAME (`../tools/mame`) and PyBoy.
 
 ### Legal
 
@@ -78,32 +105,61 @@ Le jeu complet tourne à partir de la ROM Game Boy Color d'origine.
   effets d'affichage les plus coûteux (dégradés du ciel, HUD de course, route) sont réécrits
   directement en 68000.
 - **Rendu GPU** (`hal/gpu.s`) : le 68000 enregistre chaque changement vidéo, et le GPU de la
-  Jaguar (Tom) rejoue ce journal pour dessiner l'image Game Boy Color ligne par ligne. L'Object
-  Processor l'affiche ensuite agrandie ×1,5.
+  Jaguar (Tom) rejoue ce journal pour dessiner l'image Game Boy Color ligne par ligne,
+  directement dans l'écran. Tom fait aussi le travail de préparation : conversion (et version
+  miroir) des tuiles quand elles changent, décodage des tilemaps, palettes transformées en
+  tables de paires de pixels, tuiles lues directement dans la ROM. Trois images en mémoire :
+  Tom ne dessine jamais dans celle qui est à l'écran. L'Object Processor affiche ensuite
+  l'image sur toute la hauteur de l'écran, en haute résolution.
 - **Son** (`hal/dsp.s`) : la puce sonore de la Game Boy est émulée sur le DSP de la Jaguar
-  (Jerry).
+  (Jerry), en double : le moteur sonore du jeu tourne une fois pour la musique et une fois pour
+  les effets, chacun avec ses quatre voies, mixées ensemble. Un effet sonore ne coupe plus une
+  voie de la musique.
 
 ### État
 
 Le jeu démarre et tous les écrans testés jusqu'ici fonctionnent : logos, intro, menus, choix
 du pilote et du défi, courses avec objets, résultats, modes Arcade, Endurance, Championnat et
-Contre-la-montre. Les tests se font surtout sous MAME (sans affichage, par scripts) et sous
-BigPEmu.
+Contre-la-montre. Le jeu tourne à pleine vitesse et à pleine cadence (60 images par seconde
+sur une machine NTSC) sur tous les écrans mesurés : intro, menus, choix du pilote et du défi,
+courses. Les tests se font surtout sous MAME (sans affichage, par scripts, avec comparaison
+des images une à une) et sous BigPEmu. Les machines PAL n'ont pas encore été testées.
+
+### Commandes et affichage
+
+Jaguar **B** ou **C** = A de la Game Boy, **A** = B, **Option** = Select, **Pause** = Start.
+
+L'image occupe toute la hauteur de l'écran, dans le mode haute résolution de la Jaguar
+(pixels de deux cycles : environ 704 pixels par ligne en NTSC, 690 en PAL ; NTSC ×1,63 =
+234 lignes, PAL ×1,97 = 283 lignes, les 144 lignes de l'image Game Boy restent visibles). La
+touche **\*** du pavé numérique bascule entre l'image d'origine en 10:9 et une image étirée
+sur toute la largeur. La touche **#** bascule entre toute la hauteur (overscan) et la zone
+sûre d'un téléviseur cathodique.
 
 ### Compilation
 
-Prérequis : JagStudio (pour `rmac` et
-`rln`), Python 3.12, et en option MAME et PyBoy pour les tests automatiques.
+Prérequis :
+- Python 3 (aucun module supplémentaire pour la compilation),
+- JagStudio, pour `rmac`, `rln`, `include/JAGUAR.INC` et `include/Univ.bin` : la variable
+  `JAGSTUDIO` donne son dossier `buildfiles` (par défaut `D:\source_codes\jagstudio\buildfiles`),
+- la ROM d'origine, *Wacky Races (Europe) (En,Fr,De,Es,It,Nl).gbc* (SHA-1
+  `dba18064c886cebe4c4be80f941622f377adab98`), dans ce dossier ou le dossier parent (ou
+  `WACKY_GBROM`).
 
 ```
-python build.py            # recompile le jeu et produit build/wacky.j64
+python build.py            # analyse + recompile le jeu et produit build/wacky.j64
 python build.py --norecomp # ne reconstruit que la partie Jaguar (HAL, GPU, DSP)
+python build.py --analyze  # refait l'analyse de la ROM Game Boy (analysis/gbre.py)
 python build.py --hud      # version de débogage : images/s du jeu et images affichées à l'écran
+python build.py --sync     # version de test pour test/sync.ps1 (tout dessiné, déterministe)
 ```
 
-La compilation attend pour l'instant le désassemblage et les traces d'exécution
-(`../analysis`) ainsi que la ROM d'origine dans le dossier parent. Ils ne font pas encore
-partie de ce dépôt.
+La ROM est copiée dans `../output` (ou `WACKY_OUTPUT`) sous le nom `Wacky Races (Jaguar).j64`
+(`--hud` : `Wacky Races (Jaguar) [debug HUD].j64` ; les versions de test restent dans `build/`). `analysis/` contient les outils qui
+désassemblent la ROM Game Boy (`gbre.py`, guidé par les traces d'exécution fusionnées de
+`analysis/coverage` et les entrées de tables de `extra_entries.txt` : uniquement des adresses,
+aucune donnée du jeu). Les tests automatiques de `test/` demandent en plus MAME
+(`../tools/mame`) et PyBoy.
 
 ### Mentions légales
 

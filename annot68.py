@@ -1,9 +1,8 @@
-﻿"""Annotations for the SM83 -> 68000 recompilation (GB rom offsets, original ROM)."""
+"""Annotations for the SM83 -> 68000 recompilation (GB rom offsets, original ROM)."""
 
 # coverage directories (relative to analysis/) whose traces (access masks, bank contexts,
 # indirect targets) are used; all of them are merged
-COVDIRS = ['out_acc', 'out_all', 'out_cov', 'out_dump', 'out_idump', 'out_intro', 'out_lang',
-           'out_menu', 'out_race', 'out_ri', 'out_rl', 'out_wx']
+COVDIRS = ['coverage']        # (merged traces, see analysis/merge_coverage.py)
 
 # GB functions replaced by HAL routines (called with jsr, return with rts)
 HLE_FUNC = {
@@ -13,6 +12,15 @@ HLE_FUNC = {
     0x30BC: 'hle_30bc',           # (DE) = (HL) + (BC) table loop (race, every frame)
     0x30FF: 'hle_30ff',           # (DE) = (HL) - (BC)
     0x8FA00: 'hle_23_7a00',       # 23:7A00: 120-byte copy (menus, every frame)
+    0xD61C0: 'hle_35_61c0',       # 35:61C0: BG palettes 1-7, one per line (menus)
+    # sound engine API (banks 20 and 21: same engine): music and effects as two instances
+    0x80000: 'snd_play', 0x84000: 'snd_play',     # 4000: play music A
+    0x80003: 'snd_update', 0x84003: 'snd_update', # 4003: once per frame
+    0x80006: 'snd_both6', 0x84006: 'snd_both6',   # 4006: stop
+    0x80009: 'snd_both9', 0x84009: 'snd_both9',   # 4009: reset, restart the looping effect
+    0x80015: 'snd_fx', 0x84015: 'snd_fx',         # 4015: play sound effect A
+    0x80018: 'snd_both18', 0x84018: 'snd_both18', # 4018: sound off
+    0xD61E9: 'hle_35_61e9',       # 35:61E9: OBJ palettes 0-6 (menus)
 }
 
 # GB loops replaced by native code: rom offset of the loop entry -> (GB address where the
@@ -20,6 +28,9 @@ HLE_FUNC = {
 HLE_BLOCK = {
     0x183E0: (0x43EE, 'hle_06_43e0'),  # 6:43E0 challenge menu: sky gradient, one colour per line
     0x184C4: (0x44D2, 'hle_06_43e0'),  # 6:44C4 same loop (other half of the frame)
+    0x180A8: (0x40B0, 'hle_06_40a8'),  # 6:40A8 wait for the VBlank (STAT mode 1)
+    0x18298: (0x42CB, 'hle_06_4298'),  # 6:4298 7 map rows (tiles), one per line
+    0x182D2: (0x4313, 'hle_06_42d2'),  # 6:42D2 7 map rows (attributes + 8), one per line
 }
 
 # calls/jumps into GB RAM code with a fixed meaning

@@ -3,13 +3,10 @@ line 0-71) as a table for the native player in hal/hle.s (same classification as
 GX4000 port: port/statchain_gen.py).
 Entry (8 bytes): dc.w gb_address, next_address ; dc.w routine index ; dc.b param, param2"""
 import os, sys
-os.environ['GBDIS_RAW'] = '1'
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
-sys.path.insert(0, os.path.join(ROOT, 'analysis'))
-sys.path.insert(0, os.path.join(ROOT, 'port'))
-from statchain import handler, next_of
-from statchain_gen import classify, START
+sys.path.insert(0, os.path.join(HERE, 'analysis'))
+from statchain import handler, next_of, classify, START
 
 ROUTINES = ['sc_grad0', 'sc_grad', 'sc_objw', 'sc_const', 'sc_objrom', 'sc_2242', 'sc_22ff',
             'sc_dma', 'sc_none', 'sc_last']
@@ -47,6 +44,47 @@ def main():
     for i in range(0, len(blob), 16):
         L.append('\tdc.b ' + ','.join('$%02x' % v for v in blob[i:i + 16]))
     L.append('\t.even')
+    # the same chain as straight code for a drawn frame (chain_fast in hal/hle.s)
+    NOPL = '\tmove.l\t#(LC_NOP|LF_LINE)<<24,(a6)+'
+    L += ['; The chain of a drawn frame as straight code (chain_fast in hal/hle.s): entry j runs after',
+          '; line j-1 and its command for the GPU also renders line j (LF_LINE). d4.w = $c400 + (C47F),',
+          '; d3 = GRAD3 command of the palette mask, d5 = last GRAD3 command sent.',
+          'sc_fastbody::', '\tmove.l\t#LC_LINE<<24,(a6)+']
+    for j in range(1, 72):
+        a, rout, p1, p2, nx = ents[j]
+        L.append(f'; {j} {rout}')
+        ly = f'\tmove.b\t#{j - 1},v_ly.w'
+        if rout == 'sc_grad':
+            L += [f'\tmove.b\t{p1 + 1}(a5,d4.w),d6', '\tlsl.w\t#8,d6', f'\tmove.b\t{p1}(a5,d4.w),d6', '\tmove.w\td6,d3',
+                  '\tcmp.l\td5,d3', f'\tbeq.s\t.gs{j}', '\tmove.l\td3,d5', '\tmove.l\td3,(a6)+', f'\tbra.s\t.gn{j}',
+                  f'.gs{j}:{NOPL}', f'.gn{j}:']
+        elif rout == 'sc_objw' and p2 == 0xFF:
+            w = 0xC100 + p1
+            L += [f'\tmove.b\t${w + 1:04x}+G(a5),d6', '\tlsl.w\t#8,d6', f'\tmove.b\t${w:04x}+G(a5),d6',
+                  '\tmove.w\t#((LC_OBCOL|LF_LINE)<<8)|21,(a6)+', '\tmove.w\td6,(a6)+',
+                  '\tmove.b\td6,obpal_raw+42.w', f'\tmove.b\t${w + 1:04x}+G(a5),obpal_raw+43.w',
+                  '\tmove.b\t#$ac,R_OCPS(a5)']
+        elif rout == 'sc_objw':
+            L += [ly, f'\tmove.l\t#${p1:02x},d7', f'\tmove.l\t#${p2:02x},d6', '\tbsr\tsc_objw', NOPL]
+        elif rout == 'sc_const':
+            L += [ly, f'\tmove.l\t#${p2:02x},d6', '\tbsr\tsc_const', NOPL]
+        elif rout == 'sc_objrom':
+            L += [ly, f'\tmove.l\t#${p1:02x},d7', '\tbsr\tsc_objrom', NOPL]
+        elif rout in ('sc_2242', 'sc_22ff'):
+            L += [ly, f'\tbsr\t{rout}', NOPL]
+        elif rout == 'sc_dma':
+            L += [ly, '\tbsr\thal_oam_dma', NOPL]
+        elif rout == 'sc_none':
+            L.append(NOPL)
+        elif rout == 'sc_last':
+            L += ['\tsf\tgb_ime.w', NOPL]
+        else:
+            raise SystemExit(f'sc_fastbody: {rout}?')
+        if j % 8 == 0:
+            L.append('\tPUBLISH\td6')
+        if j in (24, 48):
+            L += ['\tcmpa.l\tlog_limit.w,a6', f'\tbcs.s\t.lk{j}', '\tbsr\tlog_slow', f'.lk{j}:']
+    L += ['; line 72', NOPL, '\trts']
     open(os.path.join(HERE, 'gen', 'scdata.s'), 'w').write('\n'.join(L) + '\n')
     print('statchain68: %d handlers, %d const bytes' % (len(ents), len(blob)))
 

@@ -1,0 +1,54 @@
+0001ed 31   # game state handler
+000219 31   # game state handler
+000245 31   # game state handler
+000272 31   # game state handler
+0002bc 31   # game state handler
+000329 31   # game state handler
+000388 31   # game state handler
+0003dd 31   # game state handler
+000418 31   # game state handler
+00048e 31   # game state handler
+000500 31   # game state handler
+000550 31   # game state handler
+00057e 31   # game state handler
+00059f 31   # game state handler
+0005dd 31   # game state handler
+00061e 31   # game state handler
+000666 31   # game state handler
+0006ee 31   # game state handler
+00083b 31   # game state handler
+000917 31   # game state handler
+0009f6 31   # game state handler
+001a73 01   # STAT handler installed by a game state
+001aac 01   # STAT handler installed by a game state
+001b13 01   # STAT handler installed by a game state
+001b4d 01   # STAT handler installed by a game state
+0072e7 01   # cheat code 0
+0072eb 01   # cheat code 1
+0072ef 01   # cheat code 2
+0072f3 01   # cheat code 3
+0072f7 01   # cheat code 4
+0072fb 01   # cheat code 5
+0072ff 01   # cheat code 6
+007303 01   # cheat code 7
+007307 01   # cheat code 8
+00730b 01   # cheat code 9
+00730f 01   # cheat code 10
+007313 01   # cheat code 11
+007317 01   # cheat code 12
+00731b 01   # cheat code 13
+00731f 01   # cheat code 14
+007323 01   # cheat code 15
+007327 01   # cheat code 16
+0186e3 06   # menu item handler (table 6:46dd)
+018720 06   # menu item handler (table 6:46dd)
+01875d 06   # menu item handler (table 6:46dd)
+018893 06   # menu item handler (table 6:4881)
+01889b 06   # menu item handler (table 6:4881)
+0188a3 06   # menu item handler (table 6:4881)
+0188ab 06   # menu item handler (table 6:4881)
+0188b3 06   # menu item handler (table 6:4881)
+0188bb 06   # menu item handler (table 6:4881)
+0188c3 06   # menu item handler (table 6:4881)
+0188cb 06   # menu item handler (table 6:4881)
+0188d3 06   # menu item handler (table 6:4881)

@@ -53,11 +53,65 @@ local trace_len = tonumber(os.getenv("PROBE_TRACE_LEN") or "1")
 local trace_cpu = os.getenv("PROBE_TRACE_CPU") or "maincpu"
 local nologo_done = false
 local gbtime = os.getenv("PROBE_GBTIME") == "1"
+-- PROBE_SYNC=1 (for uild.py --sync ROMs): frame numbers are GPU frames (= GB frames in that
+-- build), the joypad schedule is written to RAM for the 68k (SCHED in hal/defs.inc) and only
+-- the framebuffers are dumped: the dump of frame N is the same whatever the speed of the 68k
+-- and the GPU
+local sync = os.getenv("PROBE_SYNC") == "1"
+local fbonly = sync or os.getenv("PROBE_FBONLY") == "1"
+local fbpitch = tonumber(os.getenv("PROBE_FBPITCH") or "352")
+local fboff = tonumber(os.getenv("PROBE_FBOFF") or "16")
 local lastg = -1
+local SCHED = 0xF9000
+local sched_bits = {["P1 Right"] = {0, 1}, ["P1 Left"] = {0, 2}, ["P1 Up"] = {0, 4}, ["P1 Down"] = {0, 8},
+  ["P1 B"] = {1, 1}, ["P1 C"] = {1, 1}, ["P1 A"] = {1, 2}, ["P1 Option"] = {1, 4}, ["P1 Pause"] = {1, 8}}
+local function write_sched()
+  local ev = {}
+  for _, i in ipairs(inputs) do
+    local b = sched_bits[i.name]
+    if b then
+      table.insert(ev, {f = i.f, k = b[1], m = b[2], on = true})
+      table.insert(ev, {f = i.f + i.len, k = b[1], m = b[2], on = false})
+    end
+  end
+  table.sort(ev, function(a, b) if a.f ~= b.f then return a.f < b.f end return (a.on and 1 or 0) < (b.on and 1 or 0) end)
+  local st = {[0] = 0, [1] = 0}
+  local a = SCHED
+  for _, e in ipairs(ev) do
+    if e.on then st[e.k] = st[e.k] | e.m else st[e.k] = st[e.k] & ~e.m end
+    mem:write_u32(a, e.f)
+    mem:write_u8(a + 4, st[0])
+    mem:write_u8(a + 5, st[1])
+    mem:write_u16(a + 6, 0)
+    a = a + 8
+  end
+  mem:write_u32(a, 0xFFFFFFFF)
+end
+local function dump_fb(n)
+  local base = mem:read_u32(0xF03FE8)
+  if base > 0 and base < 4 then base = (base + 0x11) * 0x10000 end
+  if base == 0 then base = 0x120000 end
+  local fh = io.open(out .. string.format("/fb0_%d.bin", n), "wb")
+  for y = 0, 143 do
+    local a = base + fboff + y * fbpitch
+    local row = {}
+    for i = 0, 319 do row[#row + 1] = string.char(mem:read_u8(a + i)) end
+    fh:write(table.concat(row))
+  end
+  fh:close()
+end
 emu.register_frame_done(function()
   n = n + 1
   local prevn = n - 1
-  if gbtime then
+  if sync then
+    if n < 400 then write_sched() end
+    local g = mem:read_u32(0xF03FEC)
+    if g == lastg then return end
+    prevn = lastg
+    if prevn < 0 then prevn = g - 1 end
+    lastg = g
+    n = g
+  elseif gbtime then
     local g = mem:read_u32(0x1024)
     if g == lastg then return end
     prevn = lastg
@@ -75,18 +129,21 @@ emu.register_frame_done(function()
   end
   if watch and watch ~= "" and n == watch_at then install_watch() end
   for _, i in ipairs(inputs) do
-    if hit(i.f) or hit(i.f + i.len) then
+    if not sync and (hit(i.f) or hit(i.f + i.len)) then
       local fld = find_field(i.name)
       if fld then fld:set_value(hit(i.f) and 1 or 0) end
     end
   end
   local fn = nil
   for f, _ in pairs(frames) do if hit(f) then fn = f end end
-  if fn then
+  if fn and fbonly then
+    dump_fb(fn)
+  elseif fn then
     local n = fn
     manager.machine.video:snapshot()
     dump(string.format("vars_%d.bin", n), 0x1000, 0x200)
     dump(string.format("code_%d.bin", n), 0x4700, 0x100)
+    dump(string.format("snd_%d.bin", n), 0x3400, 0x200)
     dump(string.format("hud_%d.bin", n), 0xF8000, 1536)
     dump(string.format("opl_%d.bin", n), 0x3000, 64)
     dump(string.format("flat_%d.bin", n), 0x100000, 0x10000)
@@ -95,7 +152,7 @@ emu.register_frame_done(function()
     for _, r in ipairs({"D0","D1","D2","D3","D4","D5","D6","D7","A0","A1","A2","A3","A4","A5","A6","SP","SR"}) do
       fh:write(string.format("%s=%08x\n", r, cpu.state[r].value))
     end
-    for _, a in ipairs({0xF03FE0, 0xF03FE4, 0xF03FE8, 0xF03FEC, 0xF03FF0, 0xF02114, 0xF02110}) do
+    for _, a in ipairs({0xF03FE0, 0xF03FE4, 0xF03FE8, 0xF03FEC, 0xF03FF0, 0xF02114, 0xF02110, 0xF0002C, 0xF00030, 0xF00034, 0xF00038, 0xF0003C, 0xF00040, 0xF00044, 0xF00048, 0xF0004C}) do
       fh:write(string.format("%06x=%08x\n", a, mem:read_u32(a)))
     end
     local dsp = manager.machine.devices[":dsp"]
@@ -109,9 +166,9 @@ emu.register_frame_done(function()
     fh:close()
     dump(string.format("gpuram_%d.bin", n), 0xF03000, 0x1000)
     dump(string.format("dspram_%d.bin", n), 0xF1B000, 0x2000)
-    dump(string.format("fb0_%d.bin", n), mem:read_u32(0xF03FE8) ~= 0 and mem:read_u32(0xF03FE8) or 0x120000, 160*144*2)
+    dump_fb(n)
     dump(string.format("vram_%d.bin", n), 0x110000, 0x4000)
-    dump(string.format("gvram_%d.bin", n), 0x11C000, 0x4000)
+    dump(string.format("gvram_%d.bin", n), 0x1D0000, 0x4000)
     if os.getenv("PROBE_PROF") then dump(string.format("prof_%d.bin", n), 0x180000, 0x20000) end
   end
   if n >= last then manager.machine:exit() end

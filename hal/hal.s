@@ -43,7 +43,7 @@ start::
 .cv:            clr.l   (a0)+
                 dbra    d0,.cv
                 lea     FLAT,a0
-                move.l  #(LOGEND-FLAT)/16-1,d0
+                move.l  #(RAMEND-FLAT)/16-1,d0
                 moveq   #0,d1
 .cb:            move.l  d1,(a0)+
                 move.l  d1,(a0)+
@@ -51,6 +51,46 @@ start::
                 move.l  d1,(a0)+
                 subq.l  #1,d0
                 bpl.s   .cb
+
+                ; GPU tables: GB colour -> RGB16 (r << 11 | b << 6 | g on 6 bits)
+                lea     CTAB,a0
+                moveq   #0,d0
+.ct:            move.w  d0,d1
+                andi.w  #31,d1
+                ror.w   #5,d1                   ; r << 11
+                move.w  d0,d2
+                lsr.w   #4,d2
+                andi.w  #$7c0,d2                ; b << 6
+                or.w    d2,d1
+                move.w  d0,d2
+                lsr.w   #5,d2
+                andi.w  #31,d2
+                move.w  d2,d3
+                add.w   d2,d2
+                lsr.w   #4,d3
+                or.w    d3,d2                   ; g: 5 -> 6 bits
+                or.w    d2,d1
+                move.w  d1,(a0)+
+                addq.w  #1,d0
+                bpl.s   .ct
+                ; decoded maps of an empty VRAM: tile 0 (LCDC.4 = 0: at $9000), palette 0
+                lea     DMAP,a0
+                move.l  #(GCHK+$1000)<<11,d1
+                moveq   #1,d2
+.dm:            move.w  #$4000/4-1,d0
+.dl:            move.l  d1,(a0)+
+                dbra    d0,.dl
+                move.l  #GCHK<<11,d1
+                dbra    d2,.dm
+
+                ; sound effects instance of the sound engine (snd_fx in hle.s): its RAM
+                ; and registers, engine on, sequencer off
+                lea     SDRV,a0
+                move.w  #(SNDB+48-SDRV)/4-1,d0
+.cs:            clr.l   (a0)+
+                dbra    d0,.cs
+                move.b  #$ff,SDRV+$b0.w         ; (C300: engine on)
+                move.b  #$80,SDRV+$bd.w         ; (C30D: no music)
 
                 bsr     init_video
                 bsr     init_gpu
@@ -73,7 +113,7 @@ start::
                 .else
                 move.w  #C_VIDENA,INT1
                 .endif
-                move.w  #$6c7,VMODE             ; RGB16, CSYNC, BGEN, PWIDTH4, VIDEN
+                move.w  #$2c7,VMODE             ; RGB16, CSYNC, BGEN, PWIDTH2 (high resolution), VIDEN
                 move.w  #$2000,sr               ; enable interrupts
 
                 ; GB memory: ROM bank 0 into the flat image
@@ -151,6 +191,9 @@ init_video:
                 move.w  #PAL_HEIGHT,d4
 .calc:          move.w  d4,a_height.w
                 move.w  d0,d1
+                lsr.w   #1,d1
+                move.w  d1,a_width.w            ; (pixels 2 clocks wide)
+                move.w  d0,d1
                 asr.w   #1,d1
                 sub.w   d1,d2
                 addq.w  #4,d2
@@ -165,17 +208,66 @@ init_video:
                 add.w   d4,d6
                 move.w  d6,a_vde.w
                 move.w  d5,VDB
-                move.w  #$ffff,VDE
+                move.w  d6,VDE                  ; (not $ffff: the OP would go on after the VBlank interrupt and eat the top of the rebuilt picture)
                 move.l  #0,BORD1
                 move.w  #0,BG
+                ; (falls into scr_calc)
+
+; size and place the picture: the whole height of the screen, all 144 lines visible (NTSC:
+; 234 lines, x1.625; PAL: 283 lines, x1.97) or the TV safe area (scr_safe, keypad #: NTSC 225 lines, PAL 270), 10:9
+; (pixels 2 clocks wide: NTSC x3.56 = 570 pixels, PAL x3.53 = 565) or the whole width
+; (scr_wide, keypad *)
+scr_calc:
+                movem.l d0-d1,-(a7)
+                moveq   #63,d0                  ; vertical scale (3.5 fixed point)
+                moveq   #113,d1                 ; horizontal scale (10:9)
+                tst.b   scr_safe.w
+                beq.s   .pfull
+                moveq   #60,d0
+                moveq   #108,d1
+.pfull:         tst.w   ntsc.w
+                beq.s   .pal
+                moveq   #52,d0
+                moveq   #114,d1
+                tst.b   scr_safe.w
+                beq.s   .pal
+                moveq   #50,d0
+                moveq   #109,d1
+.pal:           tst.b   scr_wide.w
+                beq.s   .asp
+                moveq   #0,d1                   ; full width: a_width / 5 (* 32 / 160)
+                move.w  a_width.w,d1
+                divu    #5,d1
+.asp:           move.b  d0,scr_vs.w
+                move.b  d1,scr_hs.w
+                mulu    #144,d0
+                lsr.l   #5,d0                   ; picture lines
+                neg.w   d0
+                add.w   a_height.w,d0           ; lines left (3 kept for the edges of the
+                subq.w  #3,d0                   ;  visible area): as many half-lines above
+                bpl.s   .yp
+                moveq   #0,d0
+.yp:            andi.w  #$fffe,d0
+                add.w   a_vdb.w,d0
+                move.w  d0,scr_y.w
+                andi.l  #$ff,d1
+                mulu    #160,d1
+                lsr.l   #5,d1                   ; picture width
+                neg.w   d1
+                add.w   a_width.w,d1
+                asr.w   #1,d1
+                bpl.s   .xp
+                moveq   #0,d1
+.xp:            move.w  d1,scr_x.w
+                movem.l (a7)+,d0-d1
                 rts
 
-; object list at OPLIST: scaled bitmap (160x144 RGB16, x1.5) + stop
-OBJ_X           equ     56
+; object list at OPLIST: scaled bitmap (160x144 RGB16, scr_* placement) + stop
 build_op:
                 movem.l d0-d2/a0,-(a7)
                 lea     OPLIST,a0
                 move.l  disp_fb.w,d0
+                addi.l  #FB_LEFT,d0             ; (the framebuffers are 176 pixels wide)
                 lsr.l   #3,d0
                 moveq   #11,d1
                 lsl.l   d1,d0                   ; data << 11
@@ -188,29 +280,34 @@ build_op:
                 ror.l   #8,d1                   ; link low 8 bits -> 31..24
                 move.l  #FB_H<<14,d0
                 or.l    d0,d1
-                move.w  a_height.w,d0
-                subi.w  #216,d0
-                bpl.s   .y0
-                moveq   #0,d0
-.y0:            andi.w  #$fffe,d0
-                add.w   a_vdb.w,d0
+                move.w  scr_y.w,d0
                 andi.l  #$7ff,d0
                 lsl.l   #3,d0
                 or.l    d0,d1
                 or.l    #SCBITOBJ,d1
                 move.l  d1,(a0)+                ; phrase 0 low
-                ; phrase 1: iwidth(40) >> 4 in high; low: xpos, depth 4, pitch 1, dwidth 40, iwidth low 4 bits
+                ; phrase 1: iwidth(40) >> 4 in high; low: xpos, depth 4, pitch 1, dwidth 44, iwidth low 4 bits
                 move.l  #(40>>4),(a0)+
-                move.l  #OBJ_X|(4<<12)|(1<<15)|(40<<18)|((40&15)<<28),(a0)+
+                move.w  scr_x.w,d0
+                andi.l  #$fff,d0
+                ori.l   #(4<<12)|(1<<15)|((FB_PITCH/8)<<18)|((40&15)<<28),d0
+                move.l  d0,(a0)+
                 ; phrase 2: hscale, vscale, remainder (3.5 fixed)
                 clr.l   (a0)+
-                move.l  #48|(48<<8)|(48<<16),(a0)+
+                moveq   #0,d0
+                move.b  scr_vs.w,d0
+                move.l  d0,d1
+                swap    d1                      ; remainder = vscale
+                lsl.l   #8,d0
+                or.l    d1,d0
+                move.b  scr_hs.w,d0
+                move.l  d0,(a0)+
                 clr.l   (a0)+
                 clr.l   (a0)+
                 .if     HUD
-                ; debug HUD: 64x12 RGB16 bitmap at the top left, then the stop object
+                ; debug HUD: 64x12 RGB16 bitmap at the top left (x2), then the stop object
                 move.l  #(HUDBUF>>3)<<11,d0
-                move.l  #(OPLIST+48)>>3,d1
+                move.l  #(OPLIST+64)>>3,d1
                 move.l  d1,d2
                 lsr.l   #8,d2
                 or.l    d2,d0
@@ -218,14 +315,18 @@ build_op:
                 andi.l  #$ff,d1
                 ror.l   #8,d1
                 move.w  a_vdb.w,d0
-                addi.w  #60,d0
+                addi.w  #16,d0
                 andi.l  #$7ff,d0
                 lsl.l   #3,d0
                 or.l    d0,d1
-                or.l    #(12<<14),d1
-                move.l  d1,(a0)+                ; BITOBJ, height 12
+                or.l    #(12<<14)|SCBITOBJ,d1
+                move.l  d1,(a0)+                ; scaled, height 12
                 move.l  #(16>>4),(a0)+
-                move.l  #0|(4<<12)|(1<<15)|(16<<18)|((16&15)<<28),(a0)+
+                move.l  #16|(4<<12)|(1<<15)|(16<<18)|((16&15)<<28),(a0)+
+                clr.l   (a0)+
+                move.l  #64|(64<<8)|(64<<16),(a0)+
+                clr.l   (a0)+
+                clr.l   (a0)+
                 .endif
                 ; stop object
                 clr.l   (a0)+
@@ -325,11 +426,29 @@ vbl_isr:
                 rte
 .nopit:
                 .endif
-                move.l  G_DISP,d0
+                moveq   #0,d0                   ; the frame the GPU published last (1-3: FB0-FB2,
+                move.w  G_DISP+2,d0             ; one word: never torn)
                 beq.s   .nd
+                move.w  d0,G_SHOWN+2            ; (from now on the OP shows it: the GPU keeps off)
+                addi.w  #$11,d0
+                swap    d0
                 move.l  d0,disp_fb.w
 .nd:            bsr     build_op
                 bsr     read_pad
+                move.l  joy_raw.w,d0            ; keypad *: 10:9 picture / full width
+                move.l  key_prev.w,d1
+                move.l  d0,key_prev.w
+                not.l   d1
+                and.l   d1,d0
+                btst    #KEY_STAR,d0
+                beq.s   .nk
+                not.b   scr_wide.w
+                bsr     scr_calc
+.nk:            btst    #KEY_HASH,d0            ; keypad #: whole height / TV safe area
+                beq.s   .nh
+                not.b   scr_safe.w
+                bsr     scr_calc
+.nh:
                 .if     HUD
                 bsr     hud_tick
                 .endif
@@ -384,7 +503,11 @@ read_pad:
 .3:             btst    #JOY_DOWN,d2
                 beq.s   .4
                 bset    #3,d0
-.4:             move.b  d0,joy_dir.w
+.4:
+                .if     ALLDRAW=3               ; (tests: scheduled joypad, see frame_end)
+                rts
+                .endif
+                move.b  d0,joy_dir.w
                 moveq   #0,d0
                 btst    #FIRE_B,d2              ; GB A = Jaguar B or C
                 bne.s   .a
@@ -412,10 +535,30 @@ init_gpu:
                 move.w  #(gpu_code_end-gpu_code)/4,d0
 .c:             move.l  (a0)+,(a1)+
                 dbra    d0,.c
+                lea     TBASE,a1                ; GPU tables (see gpu.s)
+                move.w  #(TEND-TBASE)/4-1,d0
+.ct:            clr.l   (a1)+
+                dbra    d0,.ct
+                lea     KMASK,a1                ; pixel pair (a, b): what an OBJ keeps of the
+                moveq   #-1,d0                  ; picture (colour 0 = transparent)
+                move.l  d0,(a1)+
+                move.l  #$ffff0000,d0
+                move.l  d0,(a1)+
+                move.l  d0,(a1)+
+                move.l  d0,(a1)+
+                moveq   #2,d0
+.km:            move.l  #$0000ffff,(a1)+
+                clr.l   (a1)+
+                clr.l   (a1)+
+                clr.l   (a1)+
+                dbra    d0,.km
+                move.l  #SPL,SPEND
+                move.l  #1,SPDIRTY
                 clr.l   G_HEAD
                 clr.l   G_TAIL
                 clr.l   G_DISP
                 clr.l   G_FRAMES
+                move.l  #1,G_SHOWN              ; (FB0 is shown at boot)
                 move.l  #gpu_start,G_PC
                 move.l  #RISCGO,G_CTRL
                 rts
@@ -751,10 +894,20 @@ io_r_key1::
                 move.b  #$80,d7
                 rts
 io_w_snd::
-                move.b  d7,(a5,d6.w)
                 move.w  d6,-(a7)
-                andi.l  #$ff,d6                 ; queue reg<<8 | value for the DSP
-                lsl.w   #8,d6
+                tst.b   snd_inst.w
+                bne.s   .ib
+                move.b  d7,(a5,d6.w)
+                tst.b   snds_tail.w             ; a music note on a channel where an effect
+                beq.s   .ia                     ; still sounds: the music takes it back
+                bsr     snd_take
+.ia:            andi.l  #$ff,d6                 ; queue reg<<8 | value for the DSP
+                bra.s   .iq
+.ib:            andi.l  #$ff,d6                 ; sound effects instance (snd_fx, hle.s):
+                lea     SNDB-$10,a0             ; its own registers, the second set of
+                move.b  d7,(a0,d6.w)            ; channels of the DSP (bit 15)
+                bset    #7,d6
+.iq:            lsl.w   #8,d6
                 move.b  d7,d6
                 lea     DQ,a0
                 moveq   #0,d7
@@ -770,9 +923,15 @@ io_w_snd::
                 rts
 ; sound register read: write-only bits read as 1
 io_r_snd::
-                move.b  (a5,d6.w),d7
                 move.w  d6,-(a7)
-                andi.w  #$1f,d6
+                tst.b   snd_inst.w
+                bne.s   .rb
+                move.b  (a5,d6.w),d7
+                bra.s   .rm
+.rb:            andi.w  #$ff,d6
+                lea     SNDB-$10,a0
+                move.b  (a0,d6.w),d7
+.rm:            andi.w  #$1f,d6
                 lea     snd_rmask(pc),a0
                 or.b    (a0,d6.w),d7
                 move.w  (a7)+,d6
@@ -781,11 +940,15 @@ snd_rmask:      dc.b    $ff,$00,$00,$bf,$00,$00,$70,$ff,$ff,$ff,$ff,$ff,$ff,$ff,
                 dc.b    $80,$3f,$00,$ff,$bf,$ff,$3f,$00,$ff,$bf,$7f,$ff,$9f,$ff,$bf,$ff   ; $10-$1f
                 .even
 io_r_nr52::
-                move.b  IO+$26(a5),d7
-                andi.b  #$80,d7
-                ori.b   #$70,d7
                 move.l  a0,-(a7)
                 movea.l #DSTATUS,a0
+                move.b  IO+$26(a5),d7
+                tst.b   snd_inst.w
+                beq.s   .a
+                move.b  SNDB+$16-$10.w,d7
+                addq.l  #4,a0                   ; (DSTATUSB)
+.a:             andi.b  #$80,d7
+                ori.b   #$70,d7
                 or.b    3(a0),d7
                 movea.l (a7)+,a0
                 rts
@@ -863,6 +1026,8 @@ io_w_ocpd::
                 moveq   #$3f,d6
                 and.b   R_OCPS(a5),d6
                 lea     obpal_raw.w,a0
+                cmp.b   (a0,d6.w),d7            ; same value (the game rewrites its palettes
+                beq.s   .same                   ; every frame): the GPU already has it
                 move.b  d7,(a0,d6.w)
                 move.b  #LC_OBCOL,(a6)+
                 move.w  d6,d7
@@ -871,7 +1036,7 @@ io_w_ocpd::
                 add.w   d7,d7
                 move.b  1(a0,d7.w),(a6)+
                 move.b  (a0,d7.w),(a6)+
-                tst.b   R_OCPS(a5)
+.same:          tst.b   R_OCPS(a5)
                 bpl.s   .n
                 addq.b  #1,d6
                 andi.b  #$3f,d6
@@ -964,7 +1129,7 @@ vram_block:
 io_w_hdma5::
                 move.b  d7,R_HDMA5(a5)
                 btst    #7,d7
-                bne.s   .hb
+                bne     .hb
                 tst.b   hdma_on.w
                 beq.s   .gdma
                 sf      hdma_on.w               ; stop a running HBlank DMA
@@ -976,6 +1141,35 @@ io_w_hdma5::
                 addq.w  #1,d0
                 lsl.w   #4,d0                   ; bytes
                 bsr     hdma_regs               ; d7 = src, d6 = dst
+                ; tile data from the ROM: the GPU reads it itself (it skips what does not
+                ; change: the game sends the same animation frames again and again). The
+                ; 68k copy of VRAM is not updated for these.
+                cmp.w   #$8000,d7
+                bcc.s   .g
+                move.w  d7,d1
+                add.w   d0,d1
+                cmp.w   #$8001,d1
+                bcc.s   .g
+                move.w  d6,d1
+                add.w   d0,d1
+                cmp.w   #$9801,d1
+                bcc.s   .g
+                bsr     src_ptr
+                move.b  #LC_BLKP,(a6)+
+                move.w  d0,d1
+                lsr.w   #4,d1
+                subq.w  #1,d1
+                add.w   d1,d1
+                or.b    vbk_cur.w,d1
+                move.b  d1,(a6)+
+                move.w  d6,(a6)+
+                move.l  a0,(a6)+
+                add.w   d0,d7
+                add.w   d0,d6
+                cmpa.l  log_limit.w,a6
+                bcs.s   .gx
+                bsr     log_slow
+                bra.s   .gx
 .g:             move.w  d0,d1                   ; chunks of up to 512 bytes
                 cmp.w   #512,d1
                 bls.s   .c
@@ -989,7 +1183,7 @@ io_w_hdma5::
                 add.w   d1,d6
                 sub.w   d1,d0
                 bne.s   .g
-                move.w  d7,hdma_src.w
+.gx:            move.w  d7,hdma_src.w
                 move.w  d6,hdma_dst.w
                 bsr     hdma_wback
                 move.b  #$ff,R_HDMA5(a5)
@@ -1030,24 +1224,43 @@ hdma_wback:
                 move.b  d7,R_HDMA3(a5)
                 rts
 ; one HBlank block
-hdma_step:
+hdma_step::
                 movem.l d6-d7,-(a7)
                 move.w  hdma_src.w,d7
                 bsr     src_ptr
                 move.w  hdma_dst.w,d6
-                lea     (a2,d6.w),a1            ; unchanged block (streamed images repeat): skip
-                cmpm.l  (a0)+,(a1)+
-                bne.s   .cp
-                cmpm.l  (a0)+,(a1)+
-                bne.s   .cp
-                cmpm.l  (a0)+,(a1)+
-                bne.s   .cp
-                cmpm.l  (a0)+,(a1)+
-                beq.s   .same
-.cp:            move.w  hdma_src.w,d7
-                bsr     src_ptr
-                moveq   #16,d7
+                cmp.w   #$8000,d7
+                bcc.s   .ram
+                cmp.w   #$97f1,d6
+                bcc.s   .cp
+                move.b  #LC_BLKP,(a6)+          ; tile data from the ROM: read by the GPU
+                move.b  vbk_cur.w,(a6)+
+                move.w  d6,(a6)+
+                move.l  a0,(a6)+
+                cmpa.l  log_limit.w,a6
+                bcs.s   .same
+                bsr     log_slow
+                bra.s   .same
+.cp:            moveq   #16,d7                  ; (the GPU skips what does not change)
                 bsr     vram_block
+                bra.s   .same
+.ram:           move.b  #LC_BLOCK,(a6)+         ; from RAM: the data
+                move.b  vbk_cur.w,(a6)+
+                move.w  d6,(a6)+
+                moveq   #16,d7
+                move.l  d7,(a6)+
+                lea     (a2,d6.w),a1
+                move.l  (a0),(a1)+
+                move.l  (a0)+,(a6)+
+                move.l  (a0),(a1)+
+                move.l  (a0)+,(a6)+
+                move.l  (a0),(a1)+
+                move.l  (a0)+,(a6)+
+                move.l  (a0),(a1)+
+                move.l  (a0)+,(a6)+
+                cmpa.l  log_limit.w,a6
+                bcs.s   .same
+                bsr     log_slow
 .same:          addi.w  #16,hdma_src.w
                 addi.w  #16,hdma_dst.w
                 bsr     hdma_wback
@@ -1321,6 +1534,16 @@ io_r_if::
                 rts
 ; LY reached 144: end of the GB frame
 frame_end::
+                .if     ALLDRAW=3               ; (tests: one frame per VBlank at most)
+                move.l  d0,-(a7)
+                move.l  vbl_count.w,d0
+.sy2:           cmp.l   fe_vbl.w,d0
+                bne.s   .sy3
+                move.l  vbl_count.w,d0
+                bra.s   .sy2
+.sy3:           move.l  d0,fe_vbl.w
+                move.l  (a7)+,d0
+                .endif
                 tst.b   rnd.w
                 beq.s   .k
                 addq.l  #1,fsent.w
@@ -1329,7 +1552,32 @@ frame_end::
                 cmpa.l  log_limit.w,a6
                 bcs.s   .k
                 bsr     log_slow
-.k:             addq.l  #1,frames.w
+.k:
+                .if     ALLDRAW=3               ; (tests: every frame drawn and finished by the
+                move.l  d0,-(a7)                ;  GPU before the next starts: GPU frame N is
+.sy1:           move.w  fsent+2.w,d0            ;  GB frame N whatever the speed of either side;
+                cmp.w   G_FRAMES+2,d0           ;  the joypad follows the schedule at SCHED,
+                bne.s   .sy1                    ;  by GB frame: see test/probe.lua)
+                addq.l  #1,frames.w
+                move.l  frames.w,d0
+                move.l  sched_ptr.w,d6
+                bne.s   .sy4
+                move.l  #SCHED,d6
+.sy4:           movea.l d6,a0
+.sy5:           cmp.l   (a0),d0
+                bcs.s   .sy6
+                move.b  4(a0),joy_dir.w
+                move.b  5(a0),joy_btn.w
+                addq.l  #8,a0
+                bra.s   .sy5
+.sy6:           move.l  a0,sched_ptr.w
+                move.l  (a7)+,d0
+                st      rnd.w
+                st      strm.w
+                clr.b   skipn.w
+                rts
+                .endif
+                addq.l  #1,frames.w
                 .if     ALLDRAW=1
                 st      rnd.w
                 st      strm.w
@@ -1357,12 +1605,14 @@ frame_end::
                 bcc.s   .fw
                 addq.l  #1,wait_vbl.w
                 bra.s   .wt
-.late:          cmp.l   #8,d0
+.late:          cmp.l   #4,d0                   ; (skipping cannot catch up a slower screen)
                 bcs.s   .l1
                 move.l  vbl_count.w,fe_vbl.w    ; far behind: accept the slowdown
                 moveq   #0,d0
-.l1:            tst.b   rnd.w
-                bne.s   .skip                   ; late drawn frame: the next one catches up
+.l1:            cmp.l   #2,d0
+                ble.s   .draw                   ; up to 2 VBlanks late: every frame is drawn
+                tst.b   rnd.w
+                bne.s   .skip                   ; later: a drawn frame is followed by an undrawn one
                 cmp.l   #3,d0
                 ble.s   .draw                   ; undrawn, at most 3 VBlanks late: draw;
                 cmpi.b  #3,skipn.w              ; else skip to catch up (up to 3 in a row)
@@ -1371,13 +1621,8 @@ frame_end::
                 addq.b  #1,skipn.w
                 bra.s   .fw
 .draw:          bsr.s   .want
-.fw:            st      strm.w                  ; stream object tiles for the frame after,
-                tst.b   rnd.w                   ; except in a drawn frame that is late
-                beq.s   .fx                     ; (the one after it will be skipped)
-                tst.b   d6
-                beq.s   .fx
-                sf      strm.w
-.fx:            move.l  (a7)+,d0
+.fw:            st      strm.w                  ; (object tiles are always streamed: cheap now)
+                move.l  (a7)+,d0
                 rts
 ; draw the next frame, if its object tiles were streamed in this one and the GPU has
 ; finished the frames already sent (else the 68k would stall on a full log)

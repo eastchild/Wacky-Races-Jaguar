@@ -1,0 +1,25 @@
+﻿rate 48000 channels 2 seconds 41.620020833333335
+  0s rms L  32767 R  32767 peak  32768 main    18.0 Hz
+  1s rms L  32768 R  32768 peak  32768 main 21818.0 Hz
+  2s rms L  32768 R  32768 peak  32768 main 21818.0 Hz
+  3s rms L  23895 R  23895 peak  32768 main     1.0 Hz
+  4s rms L      0 R      0 peak      0 main     0.0 Hz
+  5s rms L      0 R      0 peak      0 main     0.0 Hz
+  6s rms L      0 R      0 peak      0 main     0.0 Hz
+  7s rms L      0 R      0 peak      0 main     0.0 Hz
+  8s rms L      0 R      0 peak      0 main     0.0 Hz
+  9s rms L      0 R      0 peak      0 main     0.0 Hz
+ 10s rms L      0 R      0 peak      0 main     0.0 Hz
+ 11s rms L      0 R      0 peak      0 main     0.0 Hz
+ 12s rms L      0 R      0 peak      0 main     0.0 Hz
+ 13s rms L      0 R      0 peak      0 main     0.0 Hz
+ 14s rms L   2133 R   2133 peak  13879 main     1.0 Hz
+ 15s rms L   7531 R   7531 peak  14749 main    67.0 Hz
+ 16s rms L   7724 R   7724 peak  13931 main   135.0 Hz
+ 17s rms L   7614 R   7614 peak  14386 main    67.0 Hz
+ 18s rms L   7416 R   7416 peak  13924 main   135.0 Hz
+ 19s rms L   7561 R   7561 peak  13900 main   135.0 Hz
+ 20s rms L   7591 R   7591 peak  14320 main    67.0 Hz
+ 21s rms L   7748 R   7748 peak  13952 main   135.0 Hz
+ 22s rms L   7562 R   7562 peak  14229 main    85.0 Hz
+ 23s rms L   8959 R   8959 peak  21483 main    85.0 Hz
