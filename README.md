@@ -38,7 +38,8 @@ challenge selection, races with items, results, the Arcade, Endurance, Champions
 Trial modes. The game runs at full speed and full frame rate (60 frames per second on an NTSC
 machine) on all the screens measured: intro, menus, racer and challenge selection, races.
 Testing is mostly done in MAME (headless, scripted, with picture-by-picture regression checks)
-and in BigPEmu. PAL machines have not been tested yet.
+and in BigPEmu. On a PAL machine the game runs at 50 frames per second (one Game Boy frame per
+VBlank: the game itself runs about 17% slower than on the Game Boy).
 
 ### Controls and display
 
@@ -46,7 +47,7 @@ Jaguar **B** or **C** = Game Boy A, **A** = Game Boy B, **Option** = Select, **P
 
 The picture fills the whole height of the screen, in the Jaguar's high-resolution mode
 (pixels two clocks wide: about 704 pixels per line in NTSC, 690 in PAL; NTSC ×1.63 = 234
-lines, PAL ×1.97 = 283 lines, all 144 lines of the Game Boy picture visible). Keypad **\***
+lines, PAL ×1.94 = 279 lines, all 144 lines of the Game Boy picture visible). Keypad **\***
 switches between the original 10:9 picture and a picture stretched to the full width. Keypad
 **#** switches between the whole height (overscan) and the safe area of a CRT TV.
 
@@ -123,7 +124,9 @@ du pilote et du défi, courses avec objets, résultats, modes Arcade, Endurance,
 Contre-la-montre. Le jeu tourne à pleine vitesse et à pleine cadence (60 images par seconde
 sur une machine NTSC) sur tous les écrans mesurés : intro, menus, choix du pilote et du défi,
 courses. Les tests se font surtout sous MAME (sans affichage, par scripts, avec comparaison
-des images une à une) et sous BigPEmu. Les machines PAL n'ont pas encore été testées.
+des images une à une) et sous BigPEmu. Sur une machine PAL, le jeu tourne à 50 images par
+seconde (une image Game Boy par VBlank : le jeu lui-même va environ 17 % moins vite que sur la
+Game Boy).
 
 ### Commandes et affichage
 
@@ -131,7 +134,7 @@ Jaguar **B** ou **C** = A de la Game Boy, **A** = B, **Option** = Select, **Paus
 
 L'image occupe toute la hauteur de l'écran, dans le mode haute résolution de la Jaguar
 (pixels de deux cycles : environ 704 pixels par ligne en NTSC, 690 en PAL ; NTSC ×1,63 =
-234 lignes, PAL ×1,97 = 283 lignes, les 144 lignes de l'image Game Boy restent visibles). La
+234 lignes, PAL ×1,94 = 279 lignes, les 144 lignes de l'image Game Boy restent visibles). La
 touche **\*** du pavé numérique bascule entre l'image d'origine en 10:9 et une image étirée
 sur toute la largeur. La touche **#** bascule entre toute la hauteur (overscan) et la zone
 sûre d'un téléviseur cathodique.

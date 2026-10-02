@@ -149,6 +149,7 @@ emu.register_frame_done(function()
     dump(string.format("flat_%d.bin", n), 0x100000, 0x10000)
     local fh = io.open(out .. string.format("/regs_%d.txt", n), "w")
     fh:write(string.format("pc=%08x\n", cpu.state["PC"].value))
+    fh:write(string.format("time=%d\n", math.floor(manager.machine.time:as_double() * 1000000)))
     for _, r in ipairs({"D0","D1","D2","D3","D4","D5","D6","D7","A0","A1","A2","A3","A4","A5","A6","SP","SR"}) do
       fh:write(string.format("%s=%08x\n", r, cpu.state[r].value))
     end

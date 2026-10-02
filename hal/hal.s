@@ -214,13 +214,13 @@ init_video:
                 ; (falls into scr_calc)
 
 ; size and place the picture: the whole height of the screen, all 144 lines visible (NTSC:
-; 234 lines, x1.625; PAL: 283 lines, x1.97) or the TV safe area (scr_safe, keypad #: NTSC 225 lines, PAL 270), 10:9
-; (pixels 2 clocks wide: NTSC x3.56 = 570 pixels, PAL x3.53 = 565) or the whole width
+; 234 lines, x1.625; PAL: 279 lines, x1.94) or the TV safe area (scr_safe, keypad #: NTSC 225 lines, PAL 270), 10:9
+; (pixels 2 clocks wide: NTSC x3.56 = 570 pixels, PAL x3.47 = 555) or the whole width
 ; (scr_wide, keypad *)
 scr_calc:
                 movem.l d0-d1,-(a7)
-                moveq   #63,d0                  ; vertical scale (3.5 fixed point)
-                moveq   #113,d1                 ; horizontal scale (10:9)
+                moveq   #62,d0                  ; vertical scale (3.5 fixed point)
+                moveq   #111,d1                 ; horizontal scale (10:9)
                 tst.b   scr_safe.w
                 beq.s   .pfull
                 moveq   #60,d0

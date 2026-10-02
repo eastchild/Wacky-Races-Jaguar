@@ -50,10 +50,22 @@ def main():
           '; line j-1 and its command for the GPU also renders line j (LF_LINE). d4.w = $c400 + (C47F),',
           '; d3 = GRAD3 command of the palette mask, d5 = last GRAD3 command sent.',
           'sc_fastbody::', '\tmove.l\t#LC_LINE<<24,(a6)+']
+    # fix of an original glitch: the OBJ palette 6 constants of entry 39 (colour 1: green for
+    # "POS" -> red for the position digits) take effect on line 38 instead of 39: the top pixel
+    # of the "/" in "n/8" (the only colour-1 pixel of line 38) is red instead of green
+    EARLY = {39: 38}
     for j in range(1, 72):
         a, rout, p1, p2, nx = ents[j]
         L.append(f'; {j} {rout}')
         ly = f'\tmove.b\t#{j - 1},v_ly.w'
+        if j in EARLY:                                  # (done with entry EARLY[j])
+            L.append(NOPL)
+            continue
+        for e, at in EARLY.items():
+            if at == j:
+                _, er, ep1, ep2, _ = ents[e]
+                assert er == 'sc_const', er
+                L += [f'; {e} {er} (on line {j})', ly, f'\tmove.l\t#${ep2:02x},d6', '\tbsr\tsc_const']
         if rout == 'sc_grad':
             L += [f'\tmove.b\t{p1 + 1}(a5,d4.w),d6', '\tlsl.w\t#8,d6', f'\tmove.b\t{p1}(a5,d4.w),d6', '\tmove.w\td6,d3',
                   '\tcmp.l\td5,d3', f'\tbeq.s\t.gs{j}', '\tmove.l\td3,d5', '\tmove.l\td3,(a6)+', f'\tbra.s\t.gn{j}',
