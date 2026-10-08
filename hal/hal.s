@@ -99,7 +99,7 @@ start::
                 ; object list + video interrupt
                 move.l  #FB0,disp_fb.w
                 bsr     build_op
-                move.l  #OPLIST,d0
+                move.l  #OPLIST+16,d0
                 swap    d0
                 move.l  d0,OLP
                 move.l  #vbl_isr,LEVEL0
@@ -208,7 +208,7 @@ init_video:
                 add.w   d4,d6
                 move.w  d6,a_vde.w
                 move.w  d5,VDB
-                move.w  d6,VDE                  ; (not $ffff: the OP would go on after the VBlank interrupt and eat the top of the rebuilt picture)
+                move.w  #$ffff,VDE              ; (as Atari's startup code: the branch objects of the list stop the OP)
                 move.l  #0,BORD1
                 move.w  #0,BG
                 ; (falls into scr_calc)
@@ -262,16 +262,31 @@ scr_calc:
                 movem.l (a7)+,d0-d1
                 rts
 
-; object list at OPLIST: scaled bitmap (160x144 RGB16, scr_* placement) + stop
+; object list (as Atari's startup code: VDE = $ffff, the list itself stops the OP outside the
+; display): OPLIST+16 branch (VC > a_vde -> stop), +24 branch (VC < a_vdb -> stop), +32 scaled
+; bitmap (160x144 RGB16, scr_* placement; 32-byte aligned), [+64 HUD], stop
+OP_STOP         equ     OPLIST+64+(HUD*32)
 build_op:
                 movem.l d0-d2/a0,-(a7)
-                lea     OPLIST,a0
+                lea     OPLIST+16,a0
+                move.l  #OP_STOP>>11,(a0)+      ; branch: link (high bits)
+                move.w  a_vde.w,d0
+                andi.l  #$7ff,d0
+                lsl.l   #3,d0
+                ori.l   #(((OP_STOP>>3)&$ff)<<24)|(2<<14)|BRANCHOBJ,d0   ; YPOS < VC
+                move.l  d0,(a0)+
+                move.l  #OP_STOP>>11,(a0)+
+                move.w  a_vdb.w,d0
+                andi.l  #$7ff,d0
+                lsl.l   #3,d0
+                ori.l   #(((OP_STOP>>3)&$ff)<<24)|(1<<14)|BRANCHOBJ,d0   ; YPOS > VC
+                move.l  d0,(a0)+
                 move.l  disp_fb.w,d0
                 addi.l  #FB_LEFT,d0             ; (the framebuffers are 176 pixels wide)
                 lsr.l   #3,d0
                 moveq   #11,d1
                 lsl.l   d1,d0                   ; data << 11
-                move.l  #(OPLIST+32)>>3,d1      ; link
+                move.l  #(OPLIST+64)>>3,d1      ; link
                 move.l  d1,d2
                 lsr.l   #8,d2
                 or.l    d2,d0
@@ -307,7 +322,7 @@ build_op:
                 .if     HUD
                 ; debug HUD: 64x12 RGB16 bitmap at the top left (x2), then the stop object
                 move.l  #(HUDBUF>>3)<<11,d0
-                move.l  #(OPLIST+64)>>3,d1
+                move.l  #(OPLIST+96)>>3,d1
                 move.l  d1,d2
                 lsr.l   #8,d2
                 or.l    d2,d0
