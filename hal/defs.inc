@@ -44,6 +44,10 @@ HUD             equ     0
                 .else
 PROFILE         equ     0
                 .endif
+                .if     ^^defined DIAG          ; diagnostic ROM (real hardware): boot stages as
+                .else                           ;   background colours, see hal.s
+DIAG            equ     0
+                .endif
                 .if     ^^defined NOGPULINE     ; measurement: the GPU renders no line
                 .else
 NOGPULINE       equ     0
@@ -92,14 +96,23 @@ DSTATUSB        equ     $f1cc0c         ;   sound effects instance
 SDRV            equ     $3400           ; sound effects instance: the engine RAM C200-C2AF,
                                         ;   C300-C33F (at +$b0) while the music's is in place
 SNDB            equ     $3500           ;   its sound registers $ff10-$ff3f
-; publish the log write pointer to the GPU as a 16-bit long index (a 68k long write is two word writes)
+; publish the log write pointer to the GPU as a long index (< $10000: the high word is always 0,
+; so a long write seen half done is still right). The 68k accesses GPU/DSP local RAM with LONG
+; moves only: word/byte accesses and clr.l (read-modify-write) are not reliable on the console.
                 .macro  PUBLISH r
                 move.l  a6,\r
                 sub.l   #LOGBUF,\r
                 lsr.l   #2,\r
-                move.w  \r,G_HEAD+2
+                move.l  \r,G_HEAD
                 .endm
 SENTINEL        equ     $fff0           ; GB return address meaning "back to the HAL"
+; (DIAG builds) boot stage reached: background colour (RGB16 r<<11 | b<<6 | g), see hal.s
+                .macro  DIAGC col
+                .if     DIAG
+                move.w  #\col,diag_col.w
+                move.w  #\col,BG
+                .endif
+                .endm
 
 ; ---- HAL variables ----
                 .abs    VARS
@@ -188,6 +201,7 @@ snds_act:       ds.b    1               ; its channels in use by an effect (bits
 snds_tail:      ds.b    1               ; its channels whose effect is over but still sounds
                                         ;   (until the music plays a note there, as on the GB)
                 .even
+diag_col:       ds.w    1               ; (DIAG) colour of the boot stage reached
                 .even
                 .text
 
