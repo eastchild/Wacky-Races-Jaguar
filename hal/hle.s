@@ -614,6 +614,12 @@ snd_swap:
                 move.l  (a1),(a0)+
                 move.l  d6,(a1)+
                 dbra    d7,.l2
+                ; C334 (car speed, written by the race code, 1:4077) stays in place: it sets
+                ; the pitch of the engine hum (ch3 instrument, 4C4A), played by the effects
+                ; instance
+                move.b  $c334+G(a5),d6
+                move.b  SDRV+$b0+$34.w,$c334+G(a5)
+                move.b  d6,SDRV+$b0+$34.w
                 not.b   snd_inst.w
                 rts
 ; run the GB engine routine a0.w in the effects instance, the GB registers kept

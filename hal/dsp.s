@@ -750,7 +750,9 @@ w_nr52:         btst    #7,r25
                 nop
 
 ; wave RAM byte: two signed samples
-w_wave:         move    r24,r20                 ; (reg-16)*4
+w_wave:         move    r24,r20                 ; (reg-$10)*4
+                subq    #32,r20
+                subq    #32,r20
                 subq    #32,r20
                 subq    #32,r20                 ; (reg-$30)*4
                 shlq    #1,r20                  ; sample index * 4

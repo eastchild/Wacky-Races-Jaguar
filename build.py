@@ -1,4 +1,4 @@
-"""Build the Jaguar cartridge:  python build.py [--norecomp] [--analyze] [--hud]
+"""Build the Jaguar cartridge:  python build.py [--norecomp] [--analyze] [--hud] [--diag]
 
     analysis/gbre.py -> build/analysis/analysis.pkl (disassembly of the GB ROM seeded with the
     coverage in analysis/coverage; only when missing, or with --analyze) ;
@@ -62,7 +62,7 @@ def main():
         subprocess.run([py, os.path.join(HERE, 'recomp68.py')], cwd=HERE, check=True)
         subprocess.run([py, os.path.join(HERE, 'statchain68.py')], cwd=HERE, check=True)
     shutil.copyfile(GBROM, os.path.join(BUILD, 'gbrom.bin'))
-    defs = (['-dPROFILE=1'] if '--profile' in sys.argv else []) + (['-dHUD=1'] if '--hud' in sys.argv else []) \
+    defs = (['-dPROFILE=1'] if '--profile' in sys.argv else []) + (['-dHUD=1'] if '--hud' in sys.argv else []) + (['-dDIAG=1'] if '--diag' in sys.argv else []) \
         + (['-dALLDRAW=1'] if '--alldraw' in sys.argv else []) + (['-dALLDRAW=2'] if '--nodraw' in sys.argv else []) \
         + (['-dNOGPULINE=1'] if '--nogpuline' in sys.argv else []) + (['-dALLDRAW=3'] if '--sync' in sys.argv else [])
     run([RMAC, '-fb', '-i' + INC] + defs + ['-o', 'build/main.o', 'main.s'], 'rmac_main.log')
@@ -91,6 +91,8 @@ def main():
     # the debug HUD build has its own name
     if not any(f in sys.argv for f in TEST_FLAGS):
         name = 'Wacky Races (Jaguar) [debug HUD].j64' if '--hud' in sys.argv else 'Wacky Races (Jaguar).j64'
+        if '--diag' in sys.argv:          # real hardware boot diagnostic (stage colours)
+            name = name.replace('(Jaguar)', '(Jaguar) [diag]')
         os.makedirs(OUTPUT, exist_ok=True)
         shutil.copyfile(out, os.path.join(OUTPUT, name))
     open(os.path.join(BUILD, 'symbols.txt'), 'w').write(

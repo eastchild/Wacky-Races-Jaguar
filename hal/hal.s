@@ -31,6 +31,20 @@ R_IE            equ     -1
 start::
                 move.w  #$2700,sr
                 lea     BOOTSTACK,a7
+                ; first of all, the OP onto a stop object of its own: it still reads the BIOS
+                ; object list (logo), in RAM that is about to be cleared and overwritten
+                clr.l   OPLIST+8
+                move.l  #STOPOBJ,OPLIST+12
+                move.l  #OPLIST+8,d0
+                swap    d0
+                move.l  d0,OLP
+                .if     DIAG
+                ; diagnostic ROM: each boot stage shows its colour around the picture (BG):
+                ; red start, yellow RAM + video, green GPU, cyan DSP, blue game started, white
+                ; first frame shown; blinking (black every other half second) = VBlank interrupt
+                move.w  #$2c7,VMODE
+                move.w  #$f800,BG               ; red
+                .endif
                 move.l  #0,G_CTRL
                 move.l  #0,D_CTRL
                 move.l  #$00070007,G_END
@@ -93,8 +107,11 @@ start::
                 move.b  #$80,SDRV+$bd.w         ; (C30D: no music)
 
                 bsr     init_video
+                DIAGC   $f83f                   ; yellow
                 bsr     init_gpu
+                DIAGC   $003f                   ; green
                 bsr     init_dsp
+                DIAGC   $07ff                   ; cyan
 
                 ; object list + video interrupt
                 move.l  #FB0,disp_fb.w
@@ -168,6 +185,7 @@ start::
                 moveq   #$0d,d3
                 moveq   #0,d4
                 moveq   #0,d5
+                DIAGC   $07c0                   ; blue
                 move    #$04,ccr                ; Z=1
                 jmp     g_00_0100
 
@@ -441,14 +459,23 @@ vbl_isr:
                 rte
 .nopit:
                 .endif
-                moveq   #0,d0                   ; the frame the GPU published last (1-3: FB0-FB2,
-                move.w  G_DISP+2,d0             ; one word: never torn)
+                move.l  G_DISP,d0               ; the frame the GPU published last (1-3: FB0-FB2)
                 beq.s   .nd
-                move.w  d0,G_SHOWN+2            ; (from now on the OP shows it: the GPU keeps off)
+                move.l  d0,G_SHOWN              ; (from now on the OP shows it: the GPU keeps off)
                 addi.w  #$11,d0
                 swap    d0
                 move.l  d0,disp_fb.w
+                .if     DIAG
+                move.w  #$ffff,diag_col.w       ; white: a frame is shown
+                .endif
 .nd:            bsr     build_op
+                .if     DIAG
+                moveq   #0,d0
+                btst    #5,vbl_count+3.w
+                bne.s   .dg
+                move.w  diag_col.w,d0
+.dg:            move.w  d0,BG
+                .endif
                 bsr     read_pad
                 move.l  joy_raw.w,d0            ; keypad *: 10:9 picture / full width
                 move.l  key_prev.w,d1
@@ -552,7 +579,8 @@ init_gpu:
                 dbra    d0,.c
                 lea     TBASE,a1                ; GPU tables (see gpu.s)
                 move.w  #(TEND-TBASE)/4-1,d0
-.ct:            clr.l   (a1)+
+                moveq   #0,d1                   ; (GPU RAM: move.l only, clr.l is unreliable)
+.ct:            move.l  d1,(a1)+
                 dbra    d0,.ct
                 lea     KMASK,a1                ; pixel pair (a, b): what an OBJ keeps of the
                 moveq   #-1,d0                  ; picture (colour 0 = transparent)
@@ -563,16 +591,16 @@ init_gpu:
                 move.l  d0,(a1)+
                 moveq   #2,d0
 .km:            move.l  #$0000ffff,(a1)+
-                clr.l   (a1)+
-                clr.l   (a1)+
-                clr.l   (a1)+
+                move.l  d1,(a1)+
+                move.l  d1,(a1)+
+                move.l  d1,(a1)+
                 dbra    d0,.km
                 move.l  #SPL,SPEND
                 move.l  #1,SPDIRTY
-                clr.l   G_HEAD
-                clr.l   G_TAIL
-                clr.l   G_DISP
-                clr.l   G_FRAMES
+                move.l  d1,G_HEAD
+                move.l  d1,G_TAIL
+                move.l  d1,G_DISP
+                move.l  d1,G_FRAMES
                 move.l  #1,G_SHOWN              ; (FB0 is shown at boot)
                 move.l  #gpu_start,G_PC
                 move.l  #RISCGO,G_CTRL
@@ -841,8 +869,7 @@ log_reg:
 log_slow::
                 movem.l d0-d1,-(a7)
 .again:         PUBLISH d0
-                moveq   #0,d0
-                move.w  G_TAIL+2,d0
+                move.l  G_TAIL,d0
                 lsl.l   #2,d0
                 add.l   #LOGBUF,d0
                 cmpa.l  d0,a6
@@ -962,9 +989,12 @@ io_r_nr52::
                 beq.s   .a
                 move.b  SNDB+$16-$10.w,d7
                 addq.l  #4,a0                   ; (DSTATUSB)
-.a:             andi.b  #$80,d7
+.a:             move.l  d6,-(a7)
+                move.l  (a0),d6                 ; (DSP RAM: long reads only)
+                andi.b  #$80,d7
                 ori.b   #$70,d7
-                or.b    3(a0),d7
+                or.b    d6,d7
+                move.l  (a7)+,d6
                 movea.l (a7)+,a0
                 rts
 
@@ -975,7 +1005,8 @@ init_dsp:
                 move.l  #0,D_CTRL
                 lea     D_RAM,a0
                 move.w  #8192/4-1,d0
-.cl:            clr.l   (a0)+
+                moveq   #0,d1                   ; (DSP RAM: move.l only, clr.l is unreliable)
+.cl:            move.l  d1,(a0)+
                 dbra    d0,.cl
                 lea     dsp_code,a0
                 lea     D_RAM,a1
@@ -1571,7 +1602,8 @@ frame_end::
                 .if     ALLDRAW=3               ; (tests: every frame drawn and finished by the
                 move.l  d0,-(a7)                ;  GPU before the next starts: GPU frame N is
 .sy1:           move.w  fsent+2.w,d0            ;  GB frame N whatever the speed of either side;
-                cmp.w   G_FRAMES+2,d0           ;  the joypad follows the schedule at SCHED,
+                move.l  G_FRAMES,d6
+                cmp.w   d6,d0                   ;  the joypad follows the schedule at SCHED,
                 bne.s   .sy1                    ;  by GB frame: see test/probe.lua)
                 addq.l  #1,frames.w
                 move.l  frames.w,d0
@@ -1643,8 +1675,9 @@ frame_end::
 ; finished the frames already sent (else the 68k would stall on a full log)
 .want:          tst.b   strm.w
                 beq.s   .nos
+                move.l  G_FRAMES,d0             ; (d0 is saved by the caller)
                 move.w  fsent+2.w,d7
-                sub.w   G_FRAMES+2,d7           ; frames sent, not finished
+                sub.w   d0,d7                   ; frames sent, not finished
                 cmp.w   #2,d7
                 bcc.s   .nos
                 st      rnd.w
