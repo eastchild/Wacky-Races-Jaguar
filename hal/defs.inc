@@ -32,7 +32,7 @@ RAMEND          equ     $200000
 SEL             equ     $32c0           ; up to 10 sprites of the line
 SCR             equ     $32f0           ; scratch long (VRAM byte writes)
 OAMX            equ     $3300           ; copy of OAM (40 longs)
-HUDBUF          equ     $0f8000         ; debug HUD bitmap 64x12 RGB16
+HUDBUF          equ     $0f8000         ; debug HUD bitmap 128x12 RGB16
 ISRSTACK        equ     $3e00           ; VBlank ISR stack (top; a7 is the GB stack otherwise)
 SCHED           equ     $0f9000         ; (sync test build) joypad schedule written by the test
                                         ;   script: long GB frame, byte dir, byte buttons, word 0
@@ -202,6 +202,11 @@ snds_tail:      ds.b    1               ; its channels whose effect is over but 
                                         ;   (until the music plays a note there, as on the GB)
                 .even
 diag_col:       ds.w    1               ; (DIAG) colour of the boot stage reached
+hud_per:        ds.w    1               ; (HUD) half-lines per frame (525 NTSC, 625 PAL)
+hud_wp:         ds.w    1               ; (HUD) wait start: half-lines after the VBlank line
+hud_ws:         ds.l    1               ; (HUD) wait start: VBlank count
+hud_wg:         ds.l    1               ; (HUD) half-lines the 68k waited for the GPU (log full)
+hud_wi:         ds.l    1               ; (HUD) half-lines the 68k was idle (VBlank waits)
                 .even
                 .text
 
