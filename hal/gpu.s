@@ -62,26 +62,25 @@ gpu_start::
                 movei   #$33333333,r0
                 moveta  r0,r1
 ; head and tail are 16-bit long indexes into the log (atomic for the 68k)
+; (r4 = the tail index while waiting: indexes are compared, not addresses; the next command
+; is read right after the head, which the 68k publishes after writing the command)
 main:
-                move    r22,r0
-                sub     r31,r0
-                shrq    #2,r0
-                store   r0,(r21)
-m_wait:         load    (r20),r0
+                move    r22,r4
+                movei   #jtab,r3
+                sub     r31,r4
+                shrq    #2,r4
+                store   r4,(r21)
+m_wait:         load    (r20),r0                ; head
+                load    (r22),r1                ; the next command (valid once the head is past it)
                 and     r28,r0
-                shlq    #2,r0
-                add     r31,r0
-                cmp     r22,r0
+                cmp     r4,r0
                 jr      eq,m_wait
-                nop
-                load    (r22),r1
-                addqt   #4,r22
-                moveta  r1,r5                   ; (flags: see post)
                 move    r1,r2
+                addqt   #4,r22
                 shlq    #2,r2
+                moveta  r1,r5                   ; (flags: see post)
                 shrq    #26,r2
                 shlq    #2,r2                   ; op * 4
-                movei   #jtab,r3
                 add     r2,r3
                 load    (r3),r3
                 jump    t,(r3)
@@ -104,56 +103,59 @@ render:
                 jump    t,(r29)
                 nop
                 .endif
+                ; (interleaved for the pipeline: each register is read two or more
+                ; instructions after it is written)
                 move    r1,r0                   ; r0 = L
-                moveta  r0,r3                   ; (kept in the alternate r3)
                 movei   #FB_PITCH,r14
-                mult    r0,r14
-                add     r24,r14
-                moveta  r14,r6                  ; (alternate r6: the line in the framebuffer)
-                load    (r27),r1                ; r1 = LCDC
-                ; ---- background
                 move    r27,r2
+                moveta  r0,r3                   ; (kept in the alternate r3)
                 addq    #8,r2
+                mult    r0,r14
                 load    (r2),r3                 ; SCY
                 addqt   #4,r2
+                load    (r27),r1                ; r1 = LCDC
                 load    (r2),r5                 ; SCX
-                moveta  r5,r2                   ; (alternate r2)
+                add     r24,r14
                 add     r0,r3
-                shlq    #24,r3
-                shrq    #24,r3                  ; y
-                move    r3,r11
-                shlq    #29,r11
-                shrq    #28,r11                 ; row * 2
-                moveta  r11,r8                  ; (alternate r8)
-                shrq    #3,r3
-                shlq    #8,r3                   ; map row * 256
+                moveta  r14,r6                  ; (alternate r6: the line in the framebuffer)
+                ; ---- background
                 move    r1,r4
+                shlq    #24,r3
                 shlq    #27,r4
+                shrq    #24,r3                  ; y
                 shrq    #30,r4                  ; LCDC bits 3 (map), 4 (tile data)
-                shlq    #13,r4
-                add     r4,r3
-                movei   #DMAP,r4
-                add     r4,r3                   ; decoded map row
-                moveta  r3,r7                   ; (alternate r7)
+                move    r3,r11
                 move    r5,r6
+                shlq    #29,r11
+                shrq    #3,r3
+                shrq    #28,r11                 ; row * 2
+                shlq    #8,r3                   ; map row * 256
+                shlq    #13,r4
                 shlq    #29,r6
+                add     r4,r3
                 shrq    #29,r6                  ; fine scroll
+                movei   #DMAP,r4
+                moveta  r5,r2                   ; (alternate r2: SCX)
+                add     r4,r3                   ; decoded map row
                 shrq    #3,r5
+                moveta  r11,r8                  ; (alternate r8)
                 shlq    #2,r5
-                move    r3,r9
-                add     r5,r9                   ; first cell
+                moveta  r3,r7                   ; (alternate r7)
                 moveq   #8,r4
+                move    r3,r9
                 sub     r6,r4
+                add     r5,r9                   ; first cell
                 shrq    #1,r4
-                shlq    #2,r4
-                add     r4,r14                  ; long of the first tile's pixel 0
                 moveq   #21,r10
+                shlq    #2,r4
                 movei   #bg_done,r13
-                btst    #0,r6
+                add     r4,r14                  ; long of the first tile's pixel 0
                 movei   #tl_even,r2
+                btst    #0,r6
+                movei   #tl_odd,r12
                 jr      eq,bg_go
                 nop
-                movei   #tl_odd,r2
+                move    r12,r2
 bg_go:          jump    t,(r2)
                 nop
 bg_done:
@@ -262,21 +264,21 @@ sp_ok:          moveq   #8,r5                   ; height
                 nop
                 moveq   #16,r5
 sp_h:           move    r0,r9
-                addq    #17,r9
-                sub     r5,r9                   ; lowest y of a sprite on this line
                 movei   #SPEND,r2
+                addq    #17,r9
                 load    (r2),r12
-                move    r9,r7
-                shlq    #24,r7
-                store   r7,(r12)                ; sentinel: always on the line
+                sub     r5,r9                   ; lowest y of a sprite on this line
+                move    r5,r14
+                shlq    #24,r9                  ; (lowest y and height in the top byte: the
+                shlq    #24,r14                 ;  entries are compared whole, y in their top byte)
+                store   r9,(r12)                ; sentinel: always on the line
                 movei   #SPL,r2
                 movei   #SEL,r3
-                moveq   #0,r4                   ; count
                 load    (r2),r7
+                moveq   #0,r4                   ; count
 sp_s1:          addqt   #4,r2
-                shrq    #24,r7
-                sub     r9,r7
-                cmp     r5,r7
+                sub     r9,r7                   ; (y - lowest) << 24 + x, tile, attributes
+                cmp     r14,r7
                 jr      cc,sp_s1                ; not on this line (unsigned y - lowest >= h)
                 load    (r2),r7                 ; (the next entry)
                 move    r2,r6
@@ -313,49 +315,67 @@ sp_m0:          movefa  r4,r2
 sp_m1:          add     r6,r13
 sp_m2:          movei   #sd_end,r18
                 movei   #sd_loop,r10
+; (scheduled for the pipeline: chains interleaved, vertical flip and 8x16 tile without
+; branches, the chunky row (external) loaded early and the paths without a mask prepared
+; while it comes)
 sd_loop:
                 subqt   #4,r3
-                load    (r3),r2                 ; OAM entry
-                load    (r2),r17                ; y x tile attr
-                move    r17,r8
-                shlq    #8,r8
-                shrq    #24,r8                  ; x = framebuffer pixel of pixel 0
-                move    r8,r7
-                subq    #1,r7
-                movei   #167,r6
-                cmp     r6,r7
-                jump    cc,(r18)                ; x = 0 or x >= 168: off screen
-                move    r17,r7
-                shrq    #24,r7                  ; y
                 move    r0,r9
-                addq    #16,r9
+                load    (r3),r2                 ; OAM entry
+                addq    #16,r9                  ; L + 16
+                movei   #167,r6
+                load    (r2),r17                ; y x tile attr
+                move    r5,r11
+                move    r17,r8
+                move    r17,r7
+                shlq    #8,r8
+                shrq    #24,r7                  ; y
+                shrq    #24,r8                  ; x = framebuffer pixel of pixel 0
                 sub     r7,r9                   ; row
-                btst    #6,r17
-                jr      eq,sd_nv
+                move    r8,r7
                 move    r17,r16
-                sub     r5,r9
-                not     r9                      ; vflip: h - 1 - row
-sd_nv:          shlq    #16,r16
+                subq    #1,r7
+                shlq    #16,r16
+                cmp     r6,r7
+                move    r17,r12
+                jump    cc,(r18)                ; x = 0 or x >= 168: off screen
+                shlq    #25,r12
+                shrq    #4,r11                  ; 1: 8x16 sprites
+                sharq   #31,r12                 ; -1: vertical flip (attr bit 6)
                 shrq    #24,r16                 ; tile
-                cmpq    #8,r5
-                jr      eq,sd_8
-                nop
-                bclr    #0,r16
-sd_8:           shlq    #3,r16
-                add     r9,r16
-                shlq    #1,r16                  ; tile * 16 + row * 2
+                xor     r12,r9
+                not     r11
+                and     r5,r12
+                and     r11,r16                 ; (8x16: even tile)
+                add     r12,r9                  ; vflip: h - 1 - row (= ~row + h)
                 move    r17,r6
+                shlq    #3,r16
                 shlq    #10,r6
+                add     r9,r16
                 movei   #$a000,r7
+                shlq    #1,r16                  ; tile * 16 + row * 2
                 and     r7,r6                   ; bank (attr bit 3), mirrored copy (bit 5: hflip)
-                add     r6,r16
                 add     r23,r16
+                add     r6,r16
                 loadw   (r16),r11               ; chunky row
+                move    r17,r6                  ; (while it loads: palette, framebuffer long
+                movei   #OPT,r14                ;  and odd x for the paths without a mask)
+                shlq    #29,r6
+                move    r8,r2
+                shrq    #23,r6                  ; palette * 64
+                shrq    #1,r2
+                add     r6,r14
+                shlq    #2,r2
+                movefa  r6,r16
+                moveq   #1,r9
+                add     r2,r16                  ; long of pixel 0
+                and     r8,r9
+                movei   #KMASK,r15
+                shlq    #1,r9                   ; 2: odd x, pixel 0 in a low word
                 cmpq    #0,r11
+                movei   #sd_nmx,r12
                 jump    eq,(r18)                ; transparent row
-                nop
                 ; BG in front? LCDC.0 and (OBJ behind BG, or tiles with BG priority)
-                movei   #sd_nm,r12
                 btst    #0,r1
                 jump    eq,(r12)
                 btst    #7,r17
@@ -397,33 +417,35 @@ sd_m3:          movefa  r12,r2
 sd_m2:          cmpq    #0,r11
                 jump    eq,(r18)                ; nothing left
                 nop
-sd_nm:          move    r17,r6
+sd_nm:          move    r17,r6                  ; (after mk, which used r9 r14 r16)
                 shlq    #29,r6
                 shrq    #23,r6                  ; palette * 64
                 movei   #OPT,r14
                 add     r6,r14
-                movei   #KMASK,r15
                 movefa  r6,r16
                 move    r8,r6
                 shrq    #1,r6
                 shlq    #2,r6
                 add     r6,r16                  ; long of pixel 0
-                shlq    #16,r11                 ; pixel pairs from the top
-                btst    #0,r8
-                jr      eq,sp_l
-                nop
-                shrq    #2,r11                  ; odd x: pixel 0 in a low word
+                moveq   #1,r9
+                and     r8,r9
+                shlq    #1,r9                   ; 2: odd x, pixel 0 in a low word
+sd_nmx:         shlq    #16,r11                 ; pixel pairs from the top
+                sh      r9,r11
 sp_l:           move    r11,r6
+                shlq    #4,r11
                 shrq    #28,r6
                 jr      eq,sp_k                 ; transparent pair
-                shlq    #4,r11
                 shlq    #2,r6
+                load    (r16),r2                ; the picture (external: first)
                 load    (r14+r6),r7             ; colours
                 load    (r15+r6),r12            ; what stays of the picture
-                load    (r16),r2
                 and     r12,r2
                 or      r7,r2
+                cmpq    #0,r11                  ; (and / or set the flags too)
                 store   r2,(r16)
+                jr      ne,sp_l
+                addqt   #4,r16
 sp_k:           cmpq    #0,r11
                 jr      ne,sp_l
                 addqt   #4,r16
@@ -499,8 +521,12 @@ mk_a:           shlq    #16,r2
                 and     r2,r11
 ; ---------------------------------------------------------------------------
 ; tile loops: r9 first decoded cell, r10 tiles, r11 row * 2, r14 destination
-; long of pixel 0 ; continue at r13
+; long of pixel 0 ; continue at r13 ; uses r1-r8 r12 r15-r18 r30
 ; tl_even: pixel 0 at the high word ; tl_odd: pixel 0 at the low word
+; Written for the real chip's pipeline (MAME does not model it): an instruction that reads
+; the result of the previous one waits a tick, so the pair indexes are computed in separate
+; registers, interleaved; the next cell and its chunky row (external loads, slow) are
+; fetched one tile ahead (the last tile reads one cell too many: rows have 64 cells).
 ; ---------------------------------------------------------------------------
 tl_even:
                 moveq   #15,r17
@@ -508,34 +534,43 @@ tl_even:
                 movei   #$1c0,r30
                 movei   #PT,r0
                 movei   #te_l,r18
-te_l:           load    (r9),r16                ; decoded cell
+                load    (r9),r16                ; first cell
                 addqt   #4,r9
                 move    r16,r15
-                and     r30,r15
-                add     r0,r15                  ; pair table of the palette
                 shrq    #11,r16
+                and     r30,r15
                 xor     r11,r16
+                add     r0,r15                  ; pair table of the palette
                 loadw   (r16),r3                ; chunky row
-                move    r3,r6
-                shrq    #12,r6
+te_l:           load    (r9),r16                ; (next cell)
+                move    r3,r6                   ; (each instruction that reads two registers
+                move    r3,r5                   ;  reads the one written two instructions
+                shrq    #12,r6                  ;  before, or follows a store: its register
+                shrq    #6,r5                   ;  write-back then costs nothing)
                 shlq    #2,r6
-                load    (r15+r6),r7
-                store   r7,(r14)
-                move    r3,r6
-                shrq    #6,r6
-                and     r17,r6
-                load    (r15+r6),r7
-                store   r7,(r14+1)
-                move    r3,r6
-                shrq    #2,r6
-                and     r17,r6
-                load    (r15+r6),r7
-                store   r7,(r14+2)
+                and     r17,r5
+                load    (r15+r6),r7             ; pixels 0-1
+                load    (r15+r5),r4             ; pixels 2-3
+                move    r3,r8
                 shlq    #2,r3
+                shrq    #2,r8
                 and     r17,r3
-                load    (r15+r3),r7
-                store   r7,(r14+3)
+                and     r17,r8
+                load    (r15+r3),r12            ; pixels 6-7
+                load    (r15+r8),r5             ; pixels 4-5
+                move    r16,r1                  ; next tile: its palette, its chunky row
+                store   r7,(r14)
+                shrq    #11,r16
+                and     r30,r1
+                store   r4,(r14+1)
+                add     r0,r1
+                xor     r11,r16
+                store   r5,(r14+2)
+                loadw   (r16),r3
+                move    r1,r15
+                store   r12,(r14+3)
                 subq    #1,r10
+                addqt   #4,r9
                 jump    ne,(r18)
                 addqt   #16,r14
                 jump    t,(r13)
@@ -547,44 +582,53 @@ tl_odd:
                 movei   #$1c0,r30
                 movei   #PT,r0
                 movei   #to_l,r18
-                load    (r14),r2                ; (the pixel left of pixel 0 stays)
-                shrq    #16,r2
-                shlq    #16,r2
-to_l:           load    (r9),r16                ; decoded cell
+                load    (r9),r16                ; first cell
                 addqt   #4,r9
+                load    (r14),r2                ; (the pixel left of pixel 0 stays)
                 move    r16,r15
-                and     r30,r15
-                add     r0,r15                  ; pair table of the palette
                 shrq    #11,r16
+                and     r30,r15
                 xor     r11,r16
+                add     r0,r15                  ; pair table of the palette
                 loadw   (r16),r3                ; chunky row
-                move    r3,r6                   ; pixel 0: low word, after the pixel kept in r2
-                shrq    #14,r6
-                shlq    #2,r6
-                load    (r15+r6),r7
-                and     r28,r7
-                or      r2,r7
-                store   r7,(r14)
-                move    r3,r6                   ; pixels 1-6
-                shrq    #8,r6
-                and     r17,r6
-                load    (r15+r6),r7
-                store   r7,(r14+1)
-                move    r3,r6
-                shrq    #4,r6
-                and     r17,r6
-                load    (r15+r6),r7
-                store   r7,(r14+2)
-                move    r3,r6
-                and     r17,r6
-                load    (r15+r6),r7
-                store   r7,(r14+3)
-                shlq    #30,r3                  ; pixel 7: high word of the next long
-                shrq    #26,r3
-                load    (r15+r3),r2
                 shrq    #16,r2
                 shlq    #16,r2
+to_l:           load    (r9),r16                ; (next cell)
+                move    r3,r6
+                move    r3,r5
+                shrq    #14,r6
+                shrq    #8,r5
+                shlq    #2,r6
+                and     r17,r5
+                load    (r15+r6),r7             ; pixel 0: low word, after the pixel kept in r2
+                load    (r15+r5),r4             ; pixels 1-6
+                and     r28,r7
+                move    r3,r8
+                or      r2,r7
+                shrq    #4,r8
+                store   r7,(r14)
+                move    r3,r12
+                and     r17,r8
+                and     r17,r12
+                load    (r15+r8),r5
+                load    (r15+r12),r8
+                store   r4,(r14+1)
+                shlq    #30,r3                  ; pixel 7: high word of the next long
+                move    r16,r1                  ; next tile: its palette, its chunky row
+                shrq    #26,r3
+                and     r30,r1
+                load    (r15+r3),r2
+                add     r0,r1
+                shrq    #11,r16
+                shrq    #16,r2
+                xor     r11,r16
+                shlq    #16,r2
+                loadw   (r16),r3
+                store   r5,(r14+2)
+                move    r1,r15
+                store   r8,(r14+3)
                 subq    #1,r10
+                addqt   #4,r9
                 jump    ne,(r18)
                 addqt   #16,r14
                 store   r2,(r14)                ; (the pixel after it is never visible)
@@ -730,6 +774,8 @@ sc_bg:          move    r6,r5
                 move    r10,r4
                 shlq    #16,r4
                 moveq   #4,r11
+                ; (not interleaved: the pair (c, c) is the same long in both halves, its
+                ; high word must be stored before its low word is read)
 sc_l:           load    (r5),r12
                 and     r28,r12
                 or      r4,r12
@@ -970,18 +1016,26 @@ hb_l:           load    (r9),r7
                 jump    cc,(r18)                ; maps
                 store   r7,(r4)
                 ; two rows lo0 hi0 lo1 hi1: swap the bytes, then shuffle hi/lo bits
+                ; (the independent halves interleaved; the addresses and the mirror's
+                ; constants fill the gaps of the serial chain)
                 move    r7,r8
-                shrq    #8,r8
-                and     r10,r8
                 and     r10,r7
+                shrq    #8,r8
                 shlq    #8,r7
+                and     r10,r8
+                move    r4,r3
                 or      r8,r7
                 move    r7,r8
+                add     r17,r3                  ; (chunky rows' address)
                 shrq    #4,r8
+                movefa  r1,r2                   ; ($33333333, for the mirror)
                 xor     r7,r8
+                movefa  r0,r30                  ; ($0f0f0f0f)
                 and     r11,r8
+                move    r3,r0
                 xor     r8,r7
                 shlq    #4,r8
+                bset    #15,r0                  ; (mirrored rows' address)
                 xor     r8,r7
                 move    r7,r8
                 shrq    #2,r8
@@ -997,31 +1051,26 @@ hb_l:           load    (r9),r7
                 xor     r8,r7
                 shlq    #1,r8
                 xor     r8,r7
-                move    r4,r3
-                add     r17,r3
                 store   r7,(r3)                 ; chunky rows
-                movefa  r1,r2                   ; mirrored: the 8 pixels of each word reversed
-                move    r7,r8
+                move    r7,r8                   ; mirrored: the 8 pixels of each word reversed
+                and     r2,r7
                 shrq    #2,r8
-                and     r2,r8
-                and     r2,r7
                 shlq    #2,r7
-                or      r8,r7
-                movefa  r0,r2
-                move    r7,r8
-                shrq    #4,r8
                 and     r2,r8
-                and     r2,r7
-                shlq    #4,r7
                 or      r8,r7
                 move    r7,r8
-                shrq    #8,r8
-                and     r10,r8
-                and     r10,r7
-                shlq    #8,r7
+                and     r30,r7
+                shrq    #4,r8
+                shlq    #4,r7
+                and     r30,r8
                 or      r8,r7
-                bset    #15,r3
-                store   r7,(r3)
+                move    r7,r8
+                and     r10,r7
+                shrq    #8,r8
+                shlq    #8,r7
+                and     r10,r8
+                or      r8,r7
+                store   r7,(r0)
 hb_nx:          addqt   #4,r13
                 subq    #1,r6
                 jump    ne,(r15)

@@ -2,7 +2,14 @@
 -- env: PROBE_FRAMES="300,600" PROBE_OUT=dir  PROBE_INPUT="frame:field:frames,..."
 local out = os.getenv("PROBE_OUT") or "."
 local frames = {}
-for f in string.gmatch(os.getenv("PROBE_FRAMES") or "600", "%d+") do frames[tonumber(f)] = true end
+for tok in string.gmatch(os.getenv("PROBE_FRAMES") or "600", "[^,]+") do   -- "f" or "a-b"
+  local a, b = string.match(tok, "^%s*(%d+)%-(%d+)%s*$")
+  if a then
+    for f = tonumber(a), tonumber(b) do frames[f] = true end
+  else
+    for f in string.gmatch(tok, "%d+") do frames[tonumber(f)] = true end
+  end
+end
 local last = 0
 for f, _ in pairs(frames) do if f > last then last = f end end
 local inputs = {}
@@ -100,17 +107,28 @@ local function dump_fb(n)
   end
   fh:close()
 end
+-- PROBE_GLOG=file: "MAME frame, GB frame" (sync: each time a GPU frame completes; else every
+-- frame, from the GB frame counter) to line up a -wavwrite / -aviwrite recording with GB frames
+local glog = os.getenv("PROBE_GLOG") and io.open(os.getenv("PROBE_GLOG"), "w")
+local mframe = 0
 emu.register_frame_done(function()
   n = n + 1
+  mframe = mframe + 1
   local prevn = n - 1
   if sync then
     if n < 400 then write_sched() end
     local g = mem:read_u32(0xF03FEC)
     if g == lastg then return end
+    if glog then glog:write(string.format("%d %d\n", mframe, g)); glog:flush() end
     prevn = lastg
     if prevn < 0 then prevn = g - 1 end
     lastg = g
     n = g
+  elseif glog then
+    -- (not sync) every MAME frame: the GB frame counter (frames, VARS+$24)
+    glog:write(string.format("%d %d\n", mframe, mem:read_u32(0x1024))); glog:flush()
+  end
+  if sync then
   elseif gbtime then
     local g = mem:read_u32(0x1024)
     if g == lastg then return end

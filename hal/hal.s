@@ -31,13 +31,18 @@ R_IE            equ     -1
 start::
                 move.w  #$2700,sr
                 lea     BOOTSTACK,a7
-                ; first of all, the OP onto a stop object of its own: it still reads the BIOS
-                ; object list (logo), in RAM that is about to be cleared and overwritten
-                clr.l   OPLIST+8
-                move.l  #STOPOBJ,OPLIST+12
-                move.l  #OPLIST+8,d0
-                swap    d0
-                move.l  d0,OLP
+                ; (the GPU and DSP are idle after the boot ROM: never stopped from here, only
+                ; a RISC may clear its own GO bit)
+                move.l  #$00070007,G_END
+                move.l  #$00070007,D_END
+                move.w  #$100,JOYSTICK          ; audio on (bit 8)
+                ; first of all, the OP onto a stop object at the head of our list: it may still
+                ; read the boot ROM's list, in RAM about to be cleared and overwritten. OLP then
+                ; stays there: build_op updates the list in place
+                clr.l   OPLIST+16
+                move.l  #STOPOBJ,OPLIST+20
+                move.l  #OPLIST+16,d0
+                bsr     gpu_set_olp
                 .if     DIAG
                 ; diagnostic ROM: each boot stage shows its colour around the picture (BG):
                 ; red start, yellow RAM + video, green GPU, cyan DSP, blue game started, white
@@ -45,11 +50,6 @@ start::
                 move.w  #$2c7,VMODE
                 move.w  #$f800,BG               ; red
                 .endif
-                move.l  #0,G_CTRL
-                move.l  #0,D_CTRL
-                move.l  #$00070007,G_END
-                move.l  #$00070007,D_END
-                move.w  #$100,JOYSTICK          ; mute off? (bit 8 = audio enable)
 
                 ; clear variables and big buffers
                 lea     VARS,a0
@@ -107,6 +107,13 @@ start::
                 move.b  #$80,SDRV+$bd.w         ; (C30D: no music)
 
                 bsr     init_video
+                .if     HUD
+                move.w  #625,hud_per.w          ; (wait counters: half-lines per frame)
+                tst.w   ntsc.w
+                beq.s   .hp
+                move.w  #525,hud_per.w
+.hp:
+                .endif
                 DIAGC   $f83f                   ; yellow
                 bsr     init_gpu
                 DIAGC   $003f                   ; green
@@ -115,10 +122,7 @@ start::
 
                 ; object list + video interrupt
                 move.l  #FB0,disp_fb.w
-                bsr     build_op
-                move.l  #OPLIST+16,d0
-                swap    d0
-                move.l  d0,OLP
+                bsr     build_op                ; (OLP already points at its head)
                 move.l  #vbl_isr,LEVEL0
                 move.w  a_vde.w,d0
                 ori.w   #1,d0
@@ -282,23 +286,18 @@ scr_calc:
 
 ; object list (as Atari's startup code: VDE = $ffff, the list itself stops the OP outside the
 ; display): OPLIST+16 branch (VC > a_vde -> stop), +24 branch (VC < a_vdb -> stop), +32 scaled
-; bitmap (160x144 RGB16, scr_* placement; 32-byte aligned), [+64 HUD], stop
+; bitmap (160x144 RGB16, scr_* placement; 32-byte aligned), [+64 HUD], stop. OLP stays on
+; OPLIST+16 (written once, by the GPU: gpu_set_olp). The OP may be reading the list while it is
+; first built: the stop object is written first, then the bitmaps, then the branches, the head
+; (+16) last, each phrase high long first, so that every step is a valid list. Later rebuilds
+; (VBlank: the OP is stopped by the first branch) only change the bitmaps.
 OP_STOP         equ     OPLIST+64+(HUD*32)
 build_op:
                 movem.l d0-d2/a0,-(a7)
-                lea     OPLIST+16,a0
-                move.l  #OP_STOP>>11,(a0)+      ; branch: link (high bits)
-                move.w  a_vde.w,d0
-                andi.l  #$7ff,d0
-                lsl.l   #3,d0
-                ori.l   #(((OP_STOP>>3)&$ff)<<24)|(2<<14)|BRANCHOBJ,d0   ; YPOS < VC
-                move.l  d0,(a0)+
-                move.l  #OP_STOP>>11,(a0)+
-                move.w  a_vdb.w,d0
-                andi.l  #$7ff,d0
-                lsl.l   #3,d0
-                ori.l   #(((OP_STOP>>3)&$ff)<<24)|(1<<14)|BRANCHOBJ,d0   ; YPOS > VC
-                move.l  d0,(a0)+
+                lea     OP_STOP,a0              ; stop object
+                clr.l   (a0)+
+                move.l  #STOPOBJ,(a0)+
+                lea     OPLIST+32,a0
                 move.l  disp_fb.w,d0
                 addi.l  #FB_LEFT,d0             ; (the framebuffers are 176 pixels wide)
                 lsr.l   #3,d0
@@ -311,7 +310,7 @@ build_op:
                 move.l  d0,(a0)+                ; phrase 0 high
                 andi.l  #$ff,d1
                 ror.l   #8,d1                   ; link low 8 bits -> 31..24
-                move.l  #FB_H<<14,d0
+                move.l  #(FB_H-1)<<14,d0        ; (scaled bitmap: HEIGHT = lines - 1)
                 or.l    d0,d1
                 move.w  scr_y.w,d0
                 andi.l  #$7ff,d0
@@ -338,7 +337,7 @@ build_op:
                 clr.l   (a0)+
                 clr.l   (a0)+
                 .if     HUD
-                ; debug HUD: 64x12 RGB16 bitmap at the top left (x2), then the stop object
+                ; debug HUD: 128x12 RGB16 bitmap at the top left (x2), then the stop object
                 move.l  #(HUDBUF>>3)<<11,d0
                 move.l  #(OPLIST+96)>>3,d1
                 move.l  d1,d2
@@ -349,31 +348,54 @@ build_op:
                 ror.l   #8,d1
                 move.w  a_vdb.w,d0
                 addi.w  #16,d0
-                andi.l  #$7ff,d0
+                andi.l  #$7fe,d0                ; (YPOS even)
                 lsl.l   #3,d0
                 or.l    d0,d1
-                or.l    #(12<<14)|SCBITOBJ,d1
-                move.l  d1,(a0)+                ; scaled, height 12
-                move.l  #(16>>4),(a0)+
-                move.l  #16|(4<<12)|(1<<15)|(16<<18)|((16&15)<<28),(a0)+
+                or.l    #((12-1)<<14)|SCBITOBJ,d1
+                move.l  d1,(a0)+                ; scaled, 12 lines
+                move.l  #(32>>4),(a0)+
+                move.l  #16|(4<<12)|(1<<15)|(32<<18)|((32&15)<<28),(a0)+
                 clr.l   (a0)+
                 move.l  #64|(64<<8)|(64<<16),(a0)+
                 clr.l   (a0)+
                 clr.l   (a0)+
                 .endif
-                ; stop object
-                clr.l   (a0)+
-                move.l  #STOPOBJ,(a0)+
+                ; the branches: +24 (VC < a_vdb -> stop), then the head +16 (VC > a_vde -> stop)
+                lea     OPLIST+24,a0
+                move.l  #OP_STOP>>11,(a0)+      ; branch: link (high bits)
+                move.w  a_vdb.w,d0
+                andi.l  #$7ff,d0
+                lsl.l   #3,d0
+                ori.l   #(((OP_STOP>>3)&$ff)<<24)|(1<<14)|BRANCHOBJ,d0   ; YPOS > VC
+                move.l  d0,(a0)
+                lea     OPLIST+16,a0
+                move.l  #OP_STOP>>11,(a0)+
+                move.w  a_vde.w,d0
+                andi.l  #$7ff,d0
+                lsl.l   #3,d0
+                ori.l   #(((OP_STOP>>3)&$ff)<<24)|(2<<14)|BRANCHOBJ,d0   ; YPOS < VC
+                move.l  d0,(a0)
                 movem.l (a7)+,d0-d2/a0
                 rts
 
                 .if     HUD
-; once a second: GB frames and drawn frames of the last second (60 = full speed)
+; every 60 VBlanks: GB frames, drawn frames (60 = full speed), % of the time the 68k waited
+; for the GPU (log full), % of the time it was idle (waiting for a VBlank)
 hud_tick:
                 subq.w  #1,hud_cnt.w
-                bgt.s   .hx
+                bgt     .hx
                 move.w  #60,hud_cnt.w
                 movem.l d3-d5/a1,-(a7)
+                move.w  hud_per.w,d3
+                mulu    #60,d3                  ; half-lines in 60 VBlanks
+                move.l  hud_wi.w,d0
+                bsr.s   .pct
+                move.l  d0,-(a7)                ; idle %
+                move.l  hud_wg.w,d0
+                bsr.s   .pct
+                move.l  d0,-(a7)                ; GPU wait %
+                clr.l   hud_wg.w
+                clr.l   hud_wi.w
                 move.l  frames.w,d0
                 move.l  d0,d1
                 sub.l   hud_f0.w,d1
@@ -382,18 +404,57 @@ hud_tick:
                 move.l  d0,d2
                 sub.l   hud_s0.w,d2
                 move.l  d0,hud_s0.w
-                lea     HUDBUF,a0               ; clear 64x12x2
-                move.w  #(64*12*2)/4-1,d0
+                lea     HUDBUF,a0               ; clear 128x12x2
+                move.w  #(128*12*2)/4-1,d0
 .cl:            clr.l   (a0)+
                 dbra    d0,.cl
                 moveq   #0,d3                   ; x
                 move.l  d1,d0
                 bsr.s   hud_num
-                moveq   #32,d3
+                moveq   #28,d3
                 move.l  d2,d0
+                bsr.s   hud_num
+                move.l  (a7)+,d0
+                moveq   #64,d3
+                bsr.s   hud_num
+                move.l  (a7)+,d0
+                moveq   #92,d3
                 bsr.s   hud_num
                 movem.l (a7)+,d3-d5/a1
 .hx:            rts
+; d0 = half-lines out of d3 -> % (0-100)
+.pct:           cmp.l   d3,d0
+                bls.s   .p1
+                move.l  d3,d0
+.p1:            mulu    #100,d0
+                divu    d3,d0
+                andi.l  #$ffff,d0
+                rts
+; (wait counters) time stamp: d6 = VBlank count, d7.w = half-lines after the VBlank line
+hud_t:
+                move.l  vbl_count.w,d6
+                move.w  VC,d7
+                andi.w  #$7ff,d7
+                sub.w   a_vde.w,d7              ; (VI = a_vde | 1)
+                bpl.s   .pos
+                add.w   hud_per.w,d7
+.pos:           rts
+; start of a wait ; uses d6/d7
+hud_wbeg:
+                bsr.s   hud_t
+                move.l  d6,hud_ws.w
+                move.w  d7,hud_wp.w
+                rts
+; end of a wait: its length (half-lines) added to the counter at a0 ; uses d6/d7
+hud_wend:
+                bsr.s   hud_t
+                sub.l   hud_ws.w,d6
+                mulu    hud_per.w,d6
+                sub.w   hud_wp.w,d7
+                ext.l   d7
+                add.l   d7,d6
+                add.l   d6,(a0)
+                rts
 ; two digits of d0 (0-99) at pixel column d3
 hud_num:
                 cmp.l   #99,d0
@@ -410,7 +471,7 @@ hud_dig:
                 lea     hud_font(pc),a1
                 mulu    #5,d0
                 adda.w  d0,a1
-                lea     HUDBUF+(64*2)+2,a0
+                lea     HUDBUF+(128*2)+2,a0
                 adda.w  d3,a0
                 adda.w  d3,a0
                 moveq   #4,d5
@@ -419,10 +480,10 @@ hud_dig:
 .px:            btst    d1,d0
                 beq.s   .pz
                 move.l  #$ffffffff,(a0)
-                move.l  #$ffffffff,64*2(a0)
+                move.l  #$ffffffff,128*2(a0)
 .pz:            addq.l  #4,a0
                 dbra    d1,.px
-                lea     244(a0),a0          ; next pixel row pair: 2*128 - 12
+                lea     500(a0),a0          ; next pixel row pair: 2*256 - 12
                 dbra    d5,.row
                 rts
 hud_font:       dc.b    7,5,5,5,7, 2,6,2,2,7, 7,1,7,4,7, 7,1,3,1,7, 5,5,7,1,1
@@ -567,6 +628,44 @@ read_pad:
                 bset    #3,d0
 .8:             move.b  d0,joy_btn.w
                 rts
+
+; ---------------------------------------------------------------------------
+; OLP is written by the GPU, never by the 68k (Atari: the OP may read it between the two
+; words of a 68k write): a stub loaded into the idle GPU stores the value and stops itself
+; (only a RISC may clear its own GO bit). d0 = list address ; uses d0-d1/a0-a1
+; ---------------------------------------------------------------------------
+gpu_set_olp:
+                lea     olp_stub,a0
+                lea     G_RAM,a1
+                move.w  #(olp_stub_end-olp_stub)/4-1,d1
+.c:             move.l  (a0)+,(a1)+
+                dbra    d1,.c
+                swap    d0                      ; (OLP is written word-swapped)
+                move.l  d0,os_val
+                move.l  #os_go,G_PC
+                move.l  #RISCGO,G_CTRL
+.wst:           move.l  G_CTRL,d0               ; until it has stopped itself
+                btst    #0,d0
+                bne.s   .wst
+                rts
+                .phrase
+olp_stub::
+                .gpu
+                .org    $f03000
+os_go:          movei   #os_val,r1
+                load    (r1),r0
+                movei   #OLP,r2
+                store   r0,(r2)
+                movei   #G_CTRL,r1
+                moveq   #0,r3
+                store   r3,(r1)                 ; the GPU stops itself
+                nop
+                nop
+                .long
+os_val:         dc.l    0
+                .68000
+                .phrase
+olp_stub_end::
 
 ; ---------------------------------------------------------------------------
 ; GPU: copy the renderer into GPU RAM and start it
@@ -868,6 +967,11 @@ log_reg:
 ; a6 reached log_limit: publish, wrap, wait for the GPU as needed
 log_slow::
                 movem.l d0-d1,-(a7)
+                .if     HUD
+                movem.l d6-d7/a0,-(a7)
+                move.l  wait_gpu.w,-(a7)
+                bsr     hud_wbeg
+                .endif
 .again:         PUBLISH d0
                 move.l  G_TAIL,d0
                 lsl.l   #2,d0
@@ -881,14 +985,26 @@ log_slow::
                 add.l   a6,d0
                 sub.l   #LOG_MARGIN,d0
                 move.l  d0,log_limit.w
+                .if     HUD
+                bra.s   .out
+                .else
                 movem.l (a7)+,d0-d1
                 rts
+                .endif
 .behind:        ; reader at or behind the writer
                 move.l  #LOGEND,d1
                 sub.l   a6,d1
                 cmp.l   #2*LOG_MARGIN,d1
                 bcs.s   .wrap
                 move.l  #LOGEND-LOG_MARGIN,log_limit.w
+                .if     HUD
+.out:           move.l  (a7)+,d6                ; (wait_gpu at entry: waited?)
+                cmp.l   wait_gpu.w,d6
+                beq.s   .nw
+                lea     hud_wg.w,a0
+                bsr     hud_wend
+.nw:            movem.l (a7)+,d6-d7/a0
+                .endif
                 movem.l (a7)+,d0-d1
                 rts
 .wrap:          sub.l   #LOGBUF,d0
@@ -896,9 +1012,15 @@ log_slow::
                 bcs.s   .wg                     ; GPU still at the start: wait
                 move.l  #LC_WRAP<<24,(a6)
                 lea     LOGBUF,a6
+                .if     HUD
+                bra     .again
+.wg:            addq.l  #1,wait_gpu.w
+                bra     .again
+                .else
                 bra.s   .again
 .wg:            addq.l  #1,wait_gpu.w
                 bra.s   .again
+                .endif
 
 ; ===========================================================================
 ; IO registers (d6.w = address, d7.b = value)
@@ -1002,8 +1124,7 @@ io_r_nr52::
 ; DSP: GB sound synthesis (hal/dsp.s) at the I2S rate
 ; ---------------------------------------------------------------------------
 init_dsp:
-                move.l  #0,D_CTRL
-                lea     D_RAM,a0
+                lea     D_RAM,a0                ; (the DSP is idle: never stopped from here)
                 move.w  #8192/4-1,d0
                 moveq   #0,d1                   ; (DSP RAM: move.l only, clr.l is unreliable)
 .cl:            move.l  d1,(a0)+
@@ -1647,11 +1768,23 @@ frame_end::
                 sgt     d6
                 bgt.s   .late
                 bsr.s   .want
+                .if     HUD
+                bsr     hud_wbeg
+                .endif
 .wt:            move.l  vbl_count.w,d0          ; early or on time: wait
                 cmp.l   fe_vbl.w,d0
+                .if     HUD
+                bcc.s   .wtx
+                .else
                 bcc.s   .fw
+                .endif
                 addq.l  #1,wait_vbl.w
                 bra.s   .wt
+                .if     HUD
+.wtx:           lea     hud_wi.w,a0
+                bsr     hud_wend
+                bra.s   .fw
+                .endif
 .late:          cmp.l   #4,d0                   ; (skipping cannot catch up a slower screen)
                 bcs.s   .l1
                 move.l  vbl_count.w,fe_vbl.w    ; far behind: accept the slowdown
@@ -1689,9 +1822,16 @@ frame_end::
 ; wait for the next VBlank (LCD off)
 frame_wait::
                 move.l  d0,-(a7)
+                .if     HUD
+                bsr     hud_wbeg
+                .endif
                 move.l  vbl_count.w,d0
 .wv:            cmp.l   vbl_count.w,d0
                 beq.s   .wv
+                .if     HUD
+                lea     hud_wi.w,a0
+                bsr     hud_wend
+                .endif
                 move.l  (a7)+,d0
                 rts
 ; flag conversion tables for push af / pop af
