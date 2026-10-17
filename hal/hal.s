@@ -709,35 +709,47 @@ init_gpu:
 ; control flow
 ; ===========================================================================
 ; ret: pop a GB address and jump to its translation (flags preserved)
+; (bus accesses count on the console: no shared tail, the bank 0 case falls through)
 gb_ret::
                 move    sr,d6
                 moveq   #0,d7
                 move.w  (a7)+,d7
-                bra.s   disp
+                .if     DIAG
+                move.w  d7,last_target.w
+                .endif
+                cmp.w   #$4000,d7
+                bcc.s   disp_hi
+                lsl.w   #2,d7
+                lea     dtab_00,a0
+                movea.l (a0,d7.l),a0
+                move    d6,ccr
+                jmp     (a0)
 ; jump to the GB address in a0.w (flags preserved)
 gb_jump::
                 move    sr,d6
                 moveq   #0,d7
                 move.w  a0,d7
-disp:           move.w  d7,last_target.w
+disp:
+                .if     DIAG
+                move.w  d7,last_target.w
+                .endif
                 cmp.w   #$4000,d7
-                bcc.s   .hi
-                add.w   d7,d7
-                add.w   d7,d7
+                bcc.s   disp_hi
+                lsl.w   #2,d7
                 lea     dtab_00,a0
                 movea.l (a0,d7.l),a0
                 move    d6,ccr
                 jmp     (a0)
-.hi:            cmp.w   #$8000,d7
-                bcc.s   ram_jump
-                add.l   d7,d7
-                add.l   d7,d7
+disp_hi:        tst.w   d7
+                bmi.s   ram_jump
+                lsl.l   #2,d7
                 movea.l cur_dtab.w,a0
                 movea.l (a0,d7.l),a0
                 move    d6,ccr
                 jmp     (a0)
 ; jump into GB RAM: sentinel (back to the HAL) or "jp nnnn" stubs ($c1a4, $c6af...)
 ram_jump:
+                move.w  d7,last_target.w
                 cmp.w   #SENTINEL,d7
                 bne.s   .code
                 move    d6,ccr
@@ -1057,8 +1069,10 @@ io_r_div::
 io_r_key1::
                 move.b  #$80,d7
                 rts
+; (each 68000 access costs ~16 cycles on the console, Jerry's more: d6 is kept in a1, not
+; on the stack, and the DSP sees the new head once per engine call, dq_publish)
 io_w_snd::
-                move.w  d6,-(a7)
+                movea.l d6,a1
                 tst.b   snd_inst.w
                 bne.s   .ib
                 move.b  d7,(a5,d6.w)
@@ -1073,17 +1087,22 @@ io_w_snd::
                 bset    #7,d6
 .iq:            lsl.w   #8,d6
                 move.b  d7,d6
-                lea     DQ,a0
                 moveq   #0,d7
                 move.b  dq_head.w,d7
-                add.w   d7,d7
-                add.w   d7,d7
-                move.l  d6,(a0,d7.w)
                 addq.b  #1,dq_head.w
+                add.w   d7,d7
+                add.w   d7,d7
+                lea     DQ,a0
+                move.l  d6,(a0,d7.w)
+                move.l  a1,d6
+                rts
+; the queued sound register writes to the DSP: publish the head (after each engine call)
+dq_publish::
+                move.l  d7,-(a7)
                 moveq   #0,d7
                 move.b  dq_head.w,d7
                 move.l  d7,DQHEAD
-                move.w  (a7)+,d6
+                move.l  (a7)+,d7
                 rts
 ; sound register read: write-only bits read as 1
 io_r_snd::
@@ -1701,6 +1720,7 @@ io_r_if::
                 rts
 ; LY reached 144: end of the GB frame
 frame_end::
+                bsr     dq_publish              ; (sound writes from outside the engine calls)
                 .if     ALLDRAW=3               ; (tests: one frame per VBlank at most)
                 move.l  d0,-(a7)
                 move.l  vbl_count.w,d0

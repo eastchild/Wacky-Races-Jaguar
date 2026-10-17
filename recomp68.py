@@ -47,6 +47,14 @@ def s16(v):
     return v - 0x10000 if v >= 0x8000 else v
 
 
+def hi_put(p, src):
+    """lines storing byte operand src into the high byte of register p (CCR clobbered, X kept):
+    rotates rather than the stack (3 bus accesses instead of ~8)"""
+    if p in src:
+        return [f'move.b {src},d7', f'ror.w #8,{p}', f'move.b d7,{p}', f'ror.w #8,{p}']
+    return [f'ror.w #8,{p}', f'move.b {src},{p}', f'ror.w #8,{p}']
+
+
 def gb_off(bank, addr):
     return addr if addr < 0x4000 else bank * 0x4000 + (addr - 0x4000)
 
@@ -478,7 +486,8 @@ class Recomp:
         """(lines, operand) giving register r as a byte operand"""
         if r == 'a': return [], 'd0'
         if r in 'cel': return [], PAIR[r]
-        return [f'move.w {PAIR[r]},-(a7)', 'move.b (a7)+,d7'], 'd7'
+        # (ror: 2 bus accesses instead of 4 through the stack, X kept)
+        return [f'move.w {PAIR[r]},d7', 'ror.w #8,d7'], 'd7'
 
     def put8(self, r, src):
         """lines storing byte operand src into register r (clobber CCR)"""
@@ -488,7 +497,7 @@ class Recomp:
         if src.startswith('#'):
             n = int(src[2:], 16) if src.startswith('#$') else int(src[1:])
             return [f'andi.w #$00ff,{p}'] + ([f'ori.w #${n << 8:04x},{p}'] if n else [])
-        return [f'move.w {p},-(a7)', f'move.b {src},(a7)', f'movem.w (a7)+,{p}']
+        return hi_put(p, src)
 
     # memory read of (rp) -> returns (lines, operand) ; operand is a memory EA or 'd7'
     def mem_read(self, off, rp):
@@ -520,17 +529,22 @@ class Recomp:
             return pre + [f'move.w {reg},d6', 'jsr oam_wr']
         return pre + [f'move.w {reg},d6', 'jsr gb_wr']
 
+    # IO handlers that do not take the address in d6
+    NO_D6 = {'io_w_bcpd', 'io_w_ocpd', 'io_w_svbk', 'io_w_vbk', 'io_r_bcpd', 'io_r_ocpd', 'io_r_if', 'io_r_p1'}
+
     def io_read(self, a):
         a &= 0xFFFF
         if 0xFF00 <= a < 0xFF80 and (a & 0xFF) in annot.IOR:
-            return [f'move.w #${a:04x},d6', f'jsr {annot.IOR[a & 0xFF]}'], 'd7'
+            h = annot.IOR[a & 0xFF]
+            return ([] if h in self.NO_D6 else [f'move.w #${a:04x},d6']) + [f'jsr {h}'], 'd7'
         return [], f'{s16(a)}(a5)'
 
     def io_write(self, a):
         """value in d7"""
         a &= 0xFFFF
         if 0xFF00 <= a < 0xFF80 and (a & 0xFF) in annot.IOW:
-            return [f'move.w #${a:04x},d6', f'jsr {annot.IOW[a & 0xFF]}']
+            h = annot.IOW[a & 0xFF]
+            return ([] if h in self.NO_D6 else [f'move.w #${a:04x},d6']) + [f'jsr {h}']
         return [f'move.b d7,{s16(a)}(a5)']
 
     def abs_read(self, off, a):
@@ -597,7 +611,10 @@ class Recomp:
         else:
             seq = None
         if cond is None:
-            out += seq if seq else [f'jmp {dest}']
+            if seq is None and self.near(o, r) and dest.startswith('g_'):
+                out.append(f'bra.w {dest}')          # (one word less than jmp abs.l)
+            else:
+                out += seq if seq else [f'jmp {dest}']
             return
         c = CC68[cond]
         if seq is None and self.near(o, r) and dest.startswith('g_'):
@@ -981,7 +998,7 @@ class Recomp:
             if src != 'd7': l.append(f'move.b {src},d7')
             reg = 'd7'
         elif r in 'bdh':
-            l += [f'move.w {PAIR[r]},-(a7)', 'move.b (a7)+,d7']
+            l += [f'move.w {PAIR[r]},d7', 'ror.w #8,d7']
             reg = 'd7'
         else:
             reg = 'd0' if r == 'a' else PAIR[r]
@@ -992,8 +1009,7 @@ class Recomp:
         else:
             l.append(f'{ins}.b #1,{reg}')
         if reg == 'd7':
-            store = self.mem_write(o, 'hl', 'd7') if r == '(hl)' else \
-                [f'move.w {PAIR[r]},-(a7)', 'move.b d7,(a7)', f'movem.w (a7)+,{PAIR[r]}']
+            store = self.mem_write(o, 'hl', 'd7') if r == '(hl)' else hi_put(PAIR[r], 'd7')
             if self.lo_now:
                 l += ['move sr,d5'] + store + ['move d5,ccr']
             else:

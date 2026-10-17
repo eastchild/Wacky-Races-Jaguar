@@ -44,6 +44,10 @@ HUD             equ     0
                 .else
 PROFILE         equ     0
                 .endif
+                .if     ^^defined DSPROAD       ; the race road loop (0:32AE fast path) on the DSP
+                .else                           ;   (hal/dsproad.s); 0: on the 68000
+DSPROAD         equ     1
+                .endif
                 .if     ^^defined DIAG          ; diagnostic ROM (real hardware): boot stages as
                 .else                           ;   background colours, see hal.s
 DIAG            equ     0
@@ -93,6 +97,22 @@ DQHEAD          equ     $f1cc00
 DQTAIL          equ     $f1cc04
 DSTATUS         equ     $f1cc08         ; channels on (NR52 bits 0-3): music instance
 DSTATUSB        equ     $f1cc0c         ;   sound effects instance
+; road service of the DSP (hal/dsproad.s): parameter block, longs written by the 68k
+RDP             equ     $f1cc40
+RD_A5           equ     RDP             ; a5 (flat GB memory)
+RD_LOG          equ     RDP+4           ; log pointer (both ways)
+RD_A2           equ     RDP+8           ; VRAM copy base (+ sext16 GB address)
+RD_A3           equ     RDP+12          ; WRAMX base (+ sext16 GB address)
+RD_TBL          equ     RDP+16          ; rl_tbl: palette pointer table (68k address)
+RD_PB           equ     RDP+20          ; rl_pbase: ROM base of the palette bank
+RD_FLG          equ     RDP+24          ; bit 0 drawn frame, bit 1 strm, bits 8-15 VBK
+RD_GL           equ     RDP+28          ; grad_last (both ways)
+RD_RHS          equ     RDP+32          ; rh_src (both ways)
+RD_RHD          equ     RDP+36          ; rh_dst (both ways)
+RD_HR           equ     RDP+40          ; FF8A FF8B FF8C FF8D
+RD_STAT         equ     RDP+44          ; DSP -> 68k: 1 the log needs room, 2 done
+RD_GO           equ     RDP+48          ; 68k -> DSP: 1 start, 2 go on (DSP: 0 when it waits)
+RD_PAL          equ     RDP+52          ; DSP -> 68k: palette address of the last road row
 SDRV            equ     $3400           ; sound effects instance: the engine RAM C200-C2AF,
                                         ;   C300-C33F (at +$b0) while the music's is in place
 SNDB            equ     $3500           ;   its sound registers $ff10-$ff3f
@@ -201,6 +221,8 @@ snds_act:       ds.b    1               ; its channels in use by an effect (bits
 snds_tail:      ds.b    1               ; its channels whose effect is over but still sounds
                                         ;   (until the music plays a note there, as on the GB)
                 .even
+hle_save:       ds.l    3               ; GB registers saved by long native routines (not on
+                                        ;   the GB stack: the game keeps data right below it)
 diag_col:       ds.w    1               ; (DIAG) colour of the boot stage reached
 hud_per:        ds.w    1               ; (HUD) half-lines per frame (525 NTSC, 625 PAL)
 hud_wp:         ds.w    1               ; (HUD) wait start: half-lines after the VBlank line

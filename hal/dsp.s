@@ -10,12 +10,12 @@
 ; the other instance's registers wait in its block (O_CTX).
 ; Loaded at $F1B000 by init_dsp.
 ; ---------------------------------------------------------------------------
-SVA             equ     $f1c000         ; instance A: 4 channel blocks of 64 bytes, ...
-SVB             equ     $f1c200         ; instance B
+SVA             equ     $f1c400         ; instance A: 4 channel blocks of 64 bytes, ...
+SVB             equ     $f1c600         ; instance B (bit 9 of the address: B)
 O_IVOL          equ     256             ; 4 longs: initial volume (NRx2) per channel
 O_WAVE          equ     320             ; 32 longs: wave samples, signed (s-8)*2
 O_CTX           equ     448             ; 16 longs: r0-r13, r16, r17 while not current
-SVX             equ     $f1c400         ; frame sequencer step
+SVX             equ     $f1cc10         ; frame sequencer step
 DSTACK          equ     $f1cff0
 FS_SEQ          equ     1615            ; 512 Hz in 16.16 per sample (20774 Hz)
 SQ_K            equ     105857390       ; 2^41 / fs
@@ -164,8 +164,19 @@ dsp_start::
                 store   r21,(r20)
                 nop
                 nop
+                .if     DSPROAD
+dsp_idle:       movei   #RD_GO,r30              ; main code: the road service (dsproad.s)
+dsp_iw:         load    (r30),r31
+                cmpq    #1,r31
+                jr      ne,dsp_iw
+                nop
+                movei   #rd_start,r30
+                jump    t,(r30)
+                nop
+                .else
 dsp_idle:       jr      t,dsp_idle
                 nop
+                .endif
 
 ; ---- instance switches: return through r21, use r20
 to_b:           movei   #SVA+O_CTX,r20
@@ -187,6 +198,8 @@ to_a:           movei   #SVB+O_CTX,r20
 
 ; ---------------------------------------------------------------------------
 snd_isr:
+                movei   #D_FLAGS,r28            ; the interrupted code's flags (the main code
+                load    (r28),r29               ;  works: they are restored at the end)
                 ; ---- one queued register write per sample
                 movei   #DQHEAD,r20
                 load    (r20),r21
@@ -346,7 +359,6 @@ sy_out:         shlq    #6,r19
                 store   r27,(r20)
                 ; ---- return from interrupt
                 movei   #D_FLAGS,r30
-                load    (r30),r29
                 bclr    #3,r29
                 bset    #10,r29                 ; clear the I2S latch
                 load    (r31),r28
@@ -1121,6 +1133,9 @@ sw_x:           jump    t,(r27)
 
                 .long
 dutytab:        dc.l    $01,$81,$87,$7e
+                .if     DSPROAD
+                .include "hal/dsproad.s"
+                .endif
 dsp_end_addr:
                 .if     dsp_end_addr > SVA
                 .error  "DSP code too long"
