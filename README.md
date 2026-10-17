@@ -20,7 +20,8 @@ The whole game runs from the original Game Boy Color ROM.
   Game Boy flags are tracked so that they are only saved when they are actually used.
 - **Hardware abstraction layer** (`hal/hal.s`, `hal/hle.s`): emulates the Game Boy hardware the
   game relies on (memory banking, LCD timing, interrupts, DMA, joypad). The hottest raster
-  effects (sky gradients, the race HUD, the road) are rewritten natively in 68000 code.
+  effects (sky gradients, the race HUD) are rewritten natively in 68000 code; the race road
+  loop runs on the DSP (`hal/dsproad.s`), between two sound samples.
 - **GPU renderer** (`hal/gpu.s`): the 68000 logs every video change, and the Jaguar's GPU (Tom)
   replays that log and draws the Game Boy Color picture line by line, straight into the
   framebuffer. Tom also does the preparation work: tile data converted (and mirrored) when it
@@ -35,10 +36,13 @@ The whole game runs from the original Game Boy Color ROM.
 
 The game boots and all the screens tested so far work: logos, intro, menus, racer and
 challenge selection, races with items, results, the Arcade, Endurance, Championship and Time
-Trial modes. The game runs at full speed and full frame rate (60 frames per second on an NTSC
-machine) on all the screens measured: intro, menus, racer and challenge selection, races.
-Testing is mostly done in MAME (headless, scripted, with picture-by-picture regression checks)
-and in BigPEmu. On a PAL machine the game runs at 50 frames per second (one Game Boy frame per
+Trial modes. It also runs on a real Jaguar, but slower than intended: MAME and BigPEmu show
+full speed, while the real console (and JagMCP, a cycle-accurate emulator) only reaches about
+half speed in races (52% in JagMCP, menus 49%, intro 88%). The 68000 is the limit: on the
+console every memory access costs it far more than in those emulators, so work goes into
+fewer 68000 bus accesses and into moving loops to the GPU and DSP.
+Testing is mostly done in MAME (headless, scripted, with picture-by-picture regression checks),
+in JagMCP for speed, and in BigPEmu. On a PAL machine the game runs at 50 frames per second (one Game Boy frame per
 VBlank: the game itself runs about 17% slower than on the Game Boy).
 
 ### Controls and display
@@ -103,8 +107,9 @@ Le jeu complet tourne à partir de la ROM Game Boy Color d'origine.
   lorsqu'ils servent vraiment.
 - **Couche d'abstraction matérielle** (`hal/hal.s`, `hal/hle.s`) : émule le matériel Game Boy
   dont le jeu a besoin (banques mémoire, timing de l'écran, interruptions, DMA, manette). Les
-  effets d'affichage les plus coûteux (dégradés du ciel, HUD de course, route) sont réécrits
-  directement en 68000.
+  effets d'affichage les plus coûteux (dégradés du ciel, HUD de course) sont réécrits
+  directement en 68000 ; la boucle de la route des courses tourne sur le DSP
+  (`hal/dsproad.s`), entre deux échantillons sonores.
 - **Rendu GPU** (`hal/gpu.s`) : le 68000 enregistre chaque changement vidéo, et le GPU de la
   Jaguar (Tom) rejoue ce journal pour dessiner l'image Game Boy Color ligne par ligne,
   directement dans l'écran. Tom fait aussi le travail de préparation : conversion (et version
@@ -121,10 +126,14 @@ Le jeu complet tourne à partir de la ROM Game Boy Color d'origine.
 
 Le jeu démarre et tous les écrans testés jusqu'ici fonctionnent : logos, intro, menus, choix
 du pilote et du défi, courses avec objets, résultats, modes Arcade, Endurance, Championnat et
-Contre-la-montre. Le jeu tourne à pleine vitesse et à pleine cadence (60 images par seconde
-sur une machine NTSC) sur tous les écrans mesurés : intro, menus, choix du pilote et du défi,
-courses. Les tests se font surtout sous MAME (sans affichage, par scripts, avec comparaison
-des images une à une) et sous BigPEmu. Sur une machine PAL, le jeu tourne à 50 images par
+Contre-la-montre. Il tourne aussi sur une vraie Jaguar, mais moins vite que prévu : MAME et
+BigPEmu le montrent à pleine vitesse, alors que la vraie console (et JagMCP, un émulateur
+fidèle au cycle près) n'atteint qu'environ la moitié de la vitesse en course (52 % dans
+JagMCP, menus 49 %, intro 88 %). La limite est le 68000 : sur la console, chaque accès mémoire
+lui coûte bien plus que dans ces émulateurs ; le travail porte donc sur la réduction de ses
+accès au bus et sur le transfert de boucles vers le GPU et le DSP.
+Les tests se font surtout sous MAME (sans affichage, par scripts, avec comparaison des images
+une à une), sous JagMCP pour la vitesse, et sous BigPEmu. Sur une machine PAL, le jeu tourne à 50 images par
 seconde (une image Game Boy par VBlank : le jeu lui-même va environ 17 % moins vite que sur la
 Game Boy).
 

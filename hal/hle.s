@@ -633,7 +633,7 @@ snd_inb:
                 bsr.s   snd_act
                 bsr     snd_swap
                 movem.l snd_save.w,d0-d3
-                rts
+                bra     dq_publish
 ; (effects instance in place) channels in use by an effect (C203, C22F, C25B, C287 != 0);
 ; an effect that is over keeps sounding (its instrument goes on) until the music plays a
 ; note on that channel (snd_take) ; uses d0-d1
@@ -723,7 +723,7 @@ snd_play::
                 movea.w #$4102,a0
                 jsr     call_gb
                 move.b  #$ff,SDRV+$b0.w
-                rts
+                bra     dq_publish
 ; 4003: once per frame: the music, then the effects when there are some
 snd_update::
                 movea.w #$426c,a0
@@ -732,7 +732,7 @@ snd_update::
                 beq.s   .ux
                 movea.w #$426c,a0
                 bra     snd_inb
-.ux:             rts
+.ux:            bra     dq_publish
 ; 4015: sound effect A: the effects instance only
 snd_fx::
                 st      snds_on.w
@@ -744,7 +744,8 @@ snd_fx::
                 bsr     snd_act
                 movem.l (a7)+,d0-d1
                 st      snds_on.w               ; (updated from the next frame on)
-                bra     snd_swap
+                bsr     snd_swap
+                bra     dq_publish
 ; 4006 (stop), 4009 (sound on, restart the looping effect), 4018 (off): both instances
 snd_both6::
                 movea.w #$4248,a0
@@ -1360,13 +1361,79 @@ road_end:       move.b  #2,v_phase.w
 road_fast:
                 move.l  a2,rd_a2.w
                 move.l  a3,rd_a3.w
+                .if     DSPROAD
+                ; run by the DSP (hal/dsproad.s): its parameters, then wait (the 68k only
+                ; makes room in the log when asked)
+                cmpa.l  log_limit.w,a6
+                bcs.s   .rm
+                bsr     log_slow
+.rm:            move.l  a5,RD_A5
+                move.l  a6,RD_LOG
+                move.l  a2,RD_A2
+                move.l  a3,RD_A3
+                move.l  rl_tbl.w,RD_TBL
+                move.l  rl_pbase.w,RD_PB
+                moveq   #0,d7
+                move.b  vbk_cur.w,d7
+                lsl.w   #8,d7
+                tst.b   strm.w
+                beq.s   .s0
+                addq.w  #2,d7
+.s0:            tst.b   rnd.w
+                beq.s   .s1
+                addq.w  #1,d7
+.s1:            move.l  d7,RD_FLG
+                move.l  grad_last.w,RD_GL
+                moveq   #0,d7
+                move.w  rh_src.w,d7
+                move.l  d7,RD_RHS
+                move.w  rh_dst.w,d7
+                move.l  d7,RD_RHD
+                move.l  $ff8a+G(a5),RD_HR
+                moveq   #1,d7
+                move.l  d7,RD_GO
+.wt:            moveq   #15,d7                  ; (polls spaced out: the DSP's bus)
+.dl:            dbra    d7,.dl
+                move.l  RD_GO,d7
+                bne.s   .wt
+                move.l  RD_STAT,d7
+                movea.l RD_LOG,a6
+                subq.l  #1,d7
+                bne.s   .dn
+                PUBLISH d7                      ; the log needs room
+                cmpa.l  log_limit.w,a6
+                bcs.s   .go
+                bsr     log_slow
+.go:            move.l  a6,RD_LOG
+                moveq   #2,d7
+                move.l  d7,RD_GO
+                bra.s   .wt
+.dn:            move.l  RD_RHS,d7
+                move.w  d7,rh_src.w
+                move.l  RD_RHD,d7
+                move.w  d7,rh_dst.w
+                move.l  RD_GL,grad_last.w
+                move.l  RD_PAL,d7               ; (0: no road row drawn)
+                beq.s   .np
+                move.l  d7,rl_pal.w
+.np:            sf      rl_rend.w
+                move.b  #69,$ff8e+G(a5)
+                addi.b  #70,v_ly.w
+                move.b  $ff9a+G(a5),d7
+                FBANK
+                move.b  #$88,R_BCPS(a5)
+                bra     road_end
+                .else
                 tst.b   rnd.w
                 beq.s   .nm
                 move.l  #(LC_LINE<<24)|73,(a6)+ ; line 73: drawn before the first change
 .nm:            lea     $c000+G(a5),a2
                 move.w  #$c600,d4
-                move.w  #$c655,d3
-                moveq   #$3e,d2
+                move.l  #$c655,d3               ; (high word: bit 31 = drawn frame, bit 30 = the
+                tst.b   rnd.w                   ;  last command is a sky line: register bits,
+                beq.s   .nd0                    ;  not memory, inside the loop)
+                bset    #31,d3
+.nd0:           moveq   #$3e,d2
                 moveq   #0,d1
                 bsr     rd_obj                  ; the object going on from the last frame
 .line:          btst    #0,d4
@@ -1414,8 +1481,8 @@ road_fast:
                 lea     $c700+G(a5),a0
                 move.b  (a0,d5.w),d6            ; SCX = C700[row]
                 move.b  d6,R_SCX(a5)
-                tst.b   rnd.w
-                beq.s   .next
+                tst.l   d3
+                bpl.s   .next
                 move.b  #LC_ROADLN|LF_LINE,(a6)+ ; line 74+n with them and BG palette 0
                 move.b  d7,(a6)+
                 move.b  d6,(a6)+
@@ -1433,7 +1500,7 @@ road_fast:
                 adda.w  d0,a0
 .pa:            move.l  a0,(a6)+
                 move.l  a0,rl_pal.w
-                sf      rl_rend.w               ; (the last command is a road row)
+                bclr    #30,d3                  ; (the last command is a road row)
 .next:          addq.w  #1,d1                   ; one more DMA block
                 subq.b  #1,d2
                 addq.w  #1,d4
@@ -1448,8 +1515,8 @@ road_fast:
                 bne     .line
                 bra     .end
 .sky:           move.b  #$92,R_BCPS(a5)         ; sky: colour C4[(C47F) + $48 + 2*(n/2)]
-                tst.b   rnd.w
-                beq     .next
+                tst.l   d3
+                bpl     .next
                 move.b  d4,d7
                 andi.b  #$fe,d7
                 addi.b  #$48,d7
@@ -1469,12 +1536,12 @@ road_fast:
                 move.l  d7,(a6)+
                 bra.s   .sk2
 .sk1:           move.l  #(LC_NOP|LF_LINE)<<24,(a6)+
-.sk2:           st      rl_rend.w               ; (the last command is a sky line)
+.sk2:           bset    #30,d3                  ; (the last command is a sky line)
                 bra     .next
-.end:           tst.b   rnd.w
-                beq.s   .e1
+.end:           tst.l   d3
+                bpl.s   .e1
                 lea     -8(a6),a0               ; line 143 is not rendered from here
-                tst.b   rl_rend.w
+                btst    #30,d3
                 beq.s   .e0
                 addq.l  #4,a0
 .e0:            bclr    #7,(a0)
@@ -1488,6 +1555,7 @@ road_fast:
                 FBANK
                 move.b  #$88,R_BCPS(a5)
                 bra     road_end
+                .endif
 
 ; current object (FF8A): a1 := its entry in C6xx, a4 := its ROM bank, a3 := its data
 rd_obj:
@@ -1597,6 +1665,8 @@ rd_wait73::
                 bcs.s   .nr
                 cmp.w   #$2559,d7
                 bcc.s   .nr
+                cmp.b   v_ly.w,d5               ; past line 73 (end of the frame, VBlank):
+                bcs.s   .gen                    ;  no chain line to play
                 bsr     chain_fast
                 cmp.b   v_ly.w,d5
                 beq.s   .dn
@@ -1866,38 +1936,70 @@ grad_batch::
                 beq     .no
                 cmp.b   #$7b,d6
                 beq     .no
-.lp:            move.b  v_ly.w,d7
-                cmp.b   #143,d7
+                ; (the 68000 pays ~40 cycles per instruction on the console: the lines are
+                ; done in registers, the state is updated once at the end; same log as a
+                ; line by line loop)
+                moveq   #0,d6
+                move.b  v_ly.w,d6
+                cmp.b   #143,d6
                 bcc     .no
+                movem.l d1-d3,hle_save.w
                 tst.b   rnd.w
-                beq.s   .nl
-                move.l  #LC_LINE<<24,d6
-                move.b  d7,d6
-                move.l  d6,(a6)+
-                andi.b  #7,d7
+                beq.s   .undrawn
+                move.l  #LC_LINE<<24,d1
+                move.b  d6,d1                   ; line marker of the current line
+                moveq   #0,d2
+                move.b  $ca90+G(a5),d2          ; gradient index
+                move.l  grad_last.w,d3          ; last colour sent (mask << 16 | colour)
+                lea     $ca00+G(a5),a1
+.lp:            move.l  d1,(a6)+                ; line marker
+                moveq   #7,d7
+                and.b   d1,d7
                 bne.s   .np
                 PUBLISH d7
-.np:            moveq   #0,d7
-                move.b  $ca90+G(a5),d7
-                bclr    #0,d7
-                lea     $ca00+G(a5),a0
-                adda.w  d7,a0
-                move.b  1(a0),d7
-                lsl.w   #8,d7
-                move.b  (a0),d7
-                moveq   #$47,d6
-                bsr     grad_m
-.nl:            move.b  #$b2,R_BCPS(a5)
-                addq.b  #1,$ca90+G(a5)
-                cmpi.b  #$90,$ca90+G(a5)
+.np:            move.w  d2,d7
+                andi.w  #$fe,d7
+                move.w  (a1,d7.w),d7            ; colour (little-endian in the GB memory)
+                ror.w   #8,d7
+                swap    d7
+                move.w  #$47,d7                 ; (BG palettes 0-2 and 6)
+                swap    d7
+                cmp.l   d3,d7
+                beq.s   .same
+                move.l  d7,d3
+                move.b  #LC_GRAD3,(a6)+
+                move.b  #$47,(a6)+
+                move.w  d7,(a6)+
+.same:          addq.b  #1,d2
+                cmp.b   #$90,d2
                 bne.s   .nw
-                clr.b   $ca90+G(a5)
-.nw:            addq.b  #1,v_ly.w
-                addq.w  #4,div_cnt.w
+                moveq   #0,d2
+.nw:            addq.b  #1,d1
                 cmpa.l  log_limit.w,a6
-                bcs.s   .lp
+                bcs.s   .nl
                 bsr     log_slow
-                bra.s   .lp
+.nl:            cmp.b   #143,d1
+                bcs.s   .lp
+                move.l  d3,grad_last.w
+                move.b  d2,$ca90+G(a5)
+                bra.s   .end
+.undrawn:       moveq   #0,d2                   ; (undrawn frame: only the state)
+                move.b  $ca90+G(a5),d2
+                add.w   #143,d2
+                sub.w   d6,d2                   ; index + lines
+                cmp.w   #$90,d2
+                bcs.s   .u1
+                sub.w   #$90,d2                 ; (at most one wrap: 143 lines < 2 * $90)
+.u1:            move.b  d2,$ca90+G(a5)
+.end:           move.b  #$b2,R_BCPS(a5)
+                moveq   #0,d7
+                move.b  #143,d7
+                sub.w   d6,d7                   ; lines done
+                add.w   d7,d7
+                add.w   d7,d7
+                add.w   d7,div_cnt.w
+                move.b  #143,v_ly.w
+                movem.l hle_save.w,d1-d3
 .no:            move.b  #2,v_phase.w
                 rts
 
@@ -1987,21 +2089,30 @@ fast_to::
                 lea     hle_1a73,a0
                 cmp.w   #$1a73,d7
                 beq.s   .h
-                bra.s   .fx
+                bra     .fx
 .none:          suba.l  a0,a0
 .h:             move.l  a0,ft_rout.w
-.lp:            move.b  v_ly.w,d7
-                cmp.b   #143,d7
-                bcc.s   .fx
+                ; (line and handler in registers, v_ly / DIV written once at the end: the
+                ; handlers use neither; same log as a line by line loop)
+                movem.l d1-d3,hle_save.w
+                move.l  a0,d2                   ; handler (0: none)
+                moveq   #0,d3
+                move.b  v_ly.w,d3               ; line
+                moveq   #0,d1                   ; line marker (0: undrawn frame, none)
                 tst.b   rnd.w
+                beq.s   .lp
+                move.l  #LC_LINE<<24,d1
+.lp:            cmp.b   #143,d3
+                bcc.s   .done
+                tst.l   d1
                 beq.s   .nl
-                move.l  #LC_LINE<<24,d6
-                move.b  d7,d6
-                move.l  d6,(a6)+
-                andi.b  #7,d7
+                move.b  d3,d1
+                move.l  d1,(a6)+
+                moveq   #7,d7
+                and.b   d3,d7
                 bne.s   .nl
                 PUBLISH d7
-.nl:            move.l  ft_rout.w,d6
+.nl:            tst.l   d2
                 beq.s   .adv
                 tst.b   gb_ime.w
                 beq.s   .pd
@@ -2009,17 +2120,24 @@ fast_to::
                 bne.s   .pd
                 bclr    #1,if_pend.w
                 sf      gb_ime.w
-                movea.l d6,a0
+                movea.l d2,a0
                 jsr     (a0)
                 bra.s   .adv
 .pd:            bset    #1,if_pend.w
-.adv:           addq.b  #1,v_ly.w
-                addq.w  #4,div_cnt.w
+.adv:           addq.b  #1,d3
                 cmpa.l  log_limit.w,a6
                 bcs.s   .ck
                 bsr     log_slow
-.ck:            cmp.b   v_ly.w,d5
+.ck:            cmp.b   d3,d5
                 bne.s   .lp
+.done:          moveq   #0,d7
+                move.b  d3,d7
+                sub.b   v_ly.w,d7               ; lines done
+                add.w   d7,d7
+                add.w   d7,d7
+                add.w   d7,div_cnt.w
+                move.b  d3,v_ly.w
+                movem.l hle_save.w,d1-d3
 .fx:             move.b  #2,v_phase.w
                 rts
 
