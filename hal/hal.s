@@ -31,11 +31,30 @@ R_IE            equ     -1
 start::
                 move.w  #$2700,sr
                 lea     BOOTSTACK,a7
-                ; (the GPU and DSP are idle after the boot ROM: never stopped from here, only
-                ; a RISC may clear its own GO bit)
+                ; stop the GPU and the DSP first, as Atari's / JagStudio's startup code does: the
+                ; boot ROM leaves the DSP RUNNING (JagMCP: at the cartridge entry it executes
+                ; main RAM from $0000 on), and it would run into our RAM and code as we fill it.
+                ; (2026-10-20: without this the console stayed black.) Their flags too: no
+                ; interrupt enable left over from the boot ROM or a loader.
+                move.l  #0,D_CTRL
+                move.l  #0,G_CTRL
+                nop
+                nop
+                nop
+                nop
+                move.l  #0,D_FLAGS
+                move.l  #0,G_FLAGS
                 move.l  #$00070007,G_END
                 move.l  #$00070007,D_END
                 move.w  #$100,JOYSTICK          ; audio on (bit 8)
+                .if     DIAG
+                ; diagnostic ROM: each boot stage shows its colour around the picture (BG):
+                ; red start (the boot ROM's logo may still show), magenta OLP set by the GPU,
+                ; yellow RAM + video, green GPU, cyan DSP, blue game started, white first frame
+                ; shown; blinking (black every other half second) = VBlank interrupt
+                move.w  #$2c7,VMODE
+                move.w  #$f800,BG               ; red
+                .endif
                 ; first of all, the OP onto a stop object at the head of our list: it may still
                 ; read the boot ROM's list, in RAM about to be cleared and overwritten. OLP then
                 ; stays there: build_op updates the list in place
@@ -43,13 +62,7 @@ start::
                 move.l  #STOPOBJ,OPLIST+20
                 move.l  #OPLIST+16,d0
                 bsr     gpu_set_olp
-                .if     DIAG
-                ; diagnostic ROM: each boot stage shows its colour around the picture (BG):
-                ; red start, yellow RAM + video, green GPU, cyan DSP, blue game started, white
-                ; first frame shown; blinking (black every other half second) = VBlank interrupt
-                move.w  #$2c7,VMODE
-                move.w  #$f800,BG               ; red
-                .endif
+                DIAGC   $ffc0                   ; magenta
 
                 ; clear variables and big buffers
                 lea     VARS,a0
@@ -1143,7 +1156,7 @@ io_r_nr52::
 ; DSP: GB sound synthesis (hal/dsp.s) at the I2S rate
 ; ---------------------------------------------------------------------------
 init_dsp:
-                lea     D_RAM,a0                ; (the DSP is idle: never stopped from here)
+                lea     D_RAM,a0                ; (the DSP was stopped at boot: start)
                 move.w  #8192/4-1,d0
                 moveq   #0,d1                   ; (DSP RAM: move.l only, clr.l is unreliable)
 .cl:            move.l  d1,(a0)+

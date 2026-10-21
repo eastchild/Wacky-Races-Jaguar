@@ -1,7 +1,7 @@
 # Smoke test of the main menu modes: mode N = N presses of Down on the main menu, then A
 # presses through the menus, then accelerate. Reports GB frames, game state (C1A0) and the
 # panic record (VARS dbg_buf) at each dump; framebuffers -> test/out_mN/fb0_F.png
-param([int[]]$Modes = @(0, 1, 2, 3, 4), [string]$Frames = "4400,5000,6000,7000,8500", [int]$Hold = 5700)
+param([int[]]$Modes = @(0, 1, 2, 3, 4), [string]$Frames = "4400,5000,6000,7000,8500", [int]$Hold = 5700, [string]$Rom = "")
 $py = "$env:LOCALAPPDATA\Programs\Python\Python312\python.exe"
 foreach ($n in $Modes) {
     $keys = @("3950:P1 B:10")
@@ -9,7 +9,7 @@ foreach ($n in $Modes) {
     $keys += (1..7 | ForEach-Object { "$(4010 + 220 * $_):P1 B:10" })
     $keys += "$($Hold):P1 B:3000"
     $out = "$PSScriptRoot\out_m$n"
-    & "$PSScriptRoot\run.ps1" -Out $out -Frames $Frames -Keys ($keys -join ',') 2>$null | Out-Null
+    & "$PSScriptRoot\run.ps1" -Out $out -Frames $Frames -Keys ($keys -join ',') -Rom $Rom 2>$null | Out-Null
     foreach ($f in $Frames.Split(',')) {
         $v = [IO.File]::ReadAllBytes("$out\vars_$f.bin")
         $fl = [IO.File]::ReadAllBytes("$out\flat_$f.bin")

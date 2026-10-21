@@ -11,6 +11,8 @@ Needs: Python 3, JagStudio's rmac, rln, include/JAGUAR.INC and include/Univ.bin 
 Output: build/wacky.j64, copied to <parent>/output/Wacky Races (Jaguar).j64 (WACKY_OUTPUT: another
 directory ; --hud: ... [debug HUD].j64).
 --sync: deterministic test build (test/sync.ps1); --alldraw / --nodraw / --nogpuline: measurements.
+--rdroom=N: the DSP road service asks for log room every N bytes (test of that path; default 768).
+--rdram: the DSP road service sends every object tile block by its RAM path (test of that path).
 """
 import os, sys, subprocess, shutil, re
 
@@ -31,7 +33,7 @@ DATA_ADDR = 0xA00000
 ROM_BASE = 0x800000
 ROM_SIZE = 0x400000
 # test / measurement builds: they stay in build/
-TEST_FLAGS = ('--sync', '--alldraw', '--nodraw', '--nogpuline', '--profile')
+TEST_FLAGS = ('--sync', '--alldraw', '--nodraw', '--nogpuline', '--profile', '--rdram')
 
 
 def run(cmd, log):
@@ -64,7 +66,9 @@ def main():
     shutil.copyfile(GBROM, os.path.join(BUILD, 'gbrom.bin'))
     defs = (['-dPROFILE=1'] if '--profile' in sys.argv else []) + (['-dHUD=1'] if '--hud' in sys.argv else []) + (['-dDIAG=1'] if '--diag' in sys.argv else []) \
         + (['-dALLDRAW=1'] if '--alldraw' in sys.argv else []) + (['-dALLDRAW=2'] if '--nodraw' in sys.argv else []) \
-        + (['-dNOGPULINE=1'] if '--nogpuline' in sys.argv else []) + (['-dALLDRAW=3'] if '--sync' in sys.argv else [])
+        + (['-dNOGPULINE=1'] if '--nogpuline' in sys.argv else []) + (['-dALLDRAW=3'] if '--sync' in sys.argv else []) \
+        + ['-dRDROOM=' + a.split('=')[1] for a in sys.argv if a.startswith('--rdroom=')] \
+        + (['-dRDRAM=1'] if '--rdram' in sys.argv else [])
     run([RMAC, '-fb', '-i' + INC] + defs + ['-o', 'build/main.o', 'main.s'], 'rmac_main.log')
     mp = run([RLN, '-z', '-n', '-m', '-a', '%x' % TEXT_ADDR, '%x' % DATA_ADDR, 'x', '-o', 'build/main.bin',
               'build/main.o'], 'rln_main.log')
@@ -89,7 +93,7 @@ def main():
     out = os.path.join(BUILD, 'wacky.j64')
     open(out, 'wb').write(rom)
     # the debug HUD build has its own name
-    if not any(f in sys.argv for f in TEST_FLAGS):
+    if not any(f in sys.argv for f in TEST_FLAGS) and not any(a.startswith('--rdroom=') for a in sys.argv):
         name = 'Wacky Races (Jaguar) [debug HUD].j64' if '--hud' in sys.argv else 'Wacky Races (Jaguar).j64'
         if '--diag' in sys.argv:          # real hardware boot diagnostic (stage colours)
             name = name.replace('(Jaguar)', '(Jaguar) [diag]')

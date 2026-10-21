@@ -81,9 +81,9 @@ rs_1:           movei   #rl_line,r27            ; the object going on from the l
                 nop
 
 ; ---- line n
-rl_line:        move    r5,r0                   ; 768 bytes of log since the chunk start:
+rl_line:        move    r5,r0                   ; RDROOM bytes of log since the chunk start:
                 sub     r23,r0                  ; the 68k makes room
-                movei   #768,r1
+                movei   #RDROOM,r1
                 cmp     r1,r0
                 jr      cs,rl_b
                 nop
@@ -438,7 +438,11 @@ rd_flush_d:     cmpq    #0,r16
                 movei   #rf_adv,r30
                 jump    eq,(r30)                ; (tiles not needed by the next frame)
                 nop
+                .if     ^^defined RDRAM
+                moveq   #0,r0                   ; (test build: every source by the RAM path)
+                .else
                 movei   #$8000,r0
+                .endif
                 cmp     r0,r13
                 movei   #rf_ram,r30
                 jump    cc,(r30)
@@ -470,7 +474,7 @@ rf_ram:         move    r16,r31                 ; from RAM: the data itself, blo
                 move    r14,r2
 rr_l:           move    r5,r0
                 sub     r23,r0
-                movei   #768,r3
+                movei   #RDROOM,r3
                 cmp     r3,r0
                 jr      cs,rr_b
                 nop

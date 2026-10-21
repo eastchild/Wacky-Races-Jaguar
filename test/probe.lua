@@ -110,10 +110,34 @@ end
 -- PROBE_GLOG=file: "MAME frame, GB frame" (sync: each time a GPU frame completes; else every
 -- frame, from the GB frame counter) to line up a -wavwrite / -aviwrite recording with GB frames
 local glog = os.getenv("PROBE_GLOG") and io.open(os.getenv("PROBE_GLOG"), "w")
+-- PROBE_DQLOG=file: every 68k write into the DSP sound queue (DQ $F1C800-$F1CBFF), to compare
+-- the sound register writes of two builds; PROBE_DSPLOG=file: DSP writes to the road service
+-- status (RD_STAT) and to the 68k's VRAM copy ($110000-$113FFF, road blocks from RAM)
+local dqlog = os.getenv("PROBE_DQLOG") and io.open(os.getenv("PROBE_DQLOG"), "w")
+local dsplog = os.getenv("PROBE_DSPLOG") and io.open(os.getenv("PROBE_DSPLOG"), "w")
+local logtaps = nil
+local function install_logtaps()
+  logtaps = {}
+  if dqlog then
+    logtaps[#logtaps + 1] = mem:install_write_tap(0xF1C800, 0xF1CBFF, "dqlog", function(offset, data, mask)
+      dqlog:write(string.format("%d %03x %08x %08x\n", n, offset & 0x3ff, data, mask))
+    end)
+  end
+  if dsplog then
+    local dsp = manager.machine.devices[":dsp"].spaces["program"]
+    logtaps[#logtaps + 1] = dsp:install_write_tap(0xF1CC6C, 0xF1CC6F, "rdstat", function(offset, data, mask)
+      dsplog:write(string.format("%d stat %08x\n", n, data))
+    end)
+    logtaps[#logtaps + 1] = dsp:install_write_tap(0x110000, 0x113FFF, "rdvram", function(offset, data, mask)
+      dsplog:write(string.format("%d vram %06x\n", n, offset))
+    end)
+  end
+end
 local mframe = 0
 emu.register_frame_done(function()
   n = n + 1
   mframe = mframe + 1
+  if (dqlog or dsplog) and not logtaps then install_logtaps() end
   local prevn = n - 1
   if sync then
     if n < 400 then write_sched() end
