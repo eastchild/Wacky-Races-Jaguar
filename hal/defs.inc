@@ -113,6 +113,10 @@ RD_HR           equ     RDP+40          ; FF8A FF8B FF8C FF8D
 RD_STAT         equ     RDP+44          ; DSP -> 68k: 1 the log needs room, 2 done
 RD_GO           equ     RDP+48          ; 68k -> DSP: 1 start, 2 go on (DSP: 0 when it waits)
 RD_PAL          equ     RDP+52          ; DSP -> 68k: palette address of the last road row
+                .if     ^^defined RDROOM        ; log bytes the DSP writes before asking the 68k for
+                .else                           ;   room (test builds: build.py --rdroom=N)
+RDROOM          equ     768
+                .endif
 SDRV            equ     $3400           ; sound effects instance: the engine RAM C200-C2AF,
                                         ;   C300-C33F (at +$b0) while the music's is in place
 SNDB            equ     $3500           ;   its sound registers $ff10-$ff3f
